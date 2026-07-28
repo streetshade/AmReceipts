@@ -1,5 +1,6 @@
 import { prisma } from "../db";
 import { parseToCents } from "../money";
+import { cacheProductImage } from "../productImages";
 
 export interface ProductInfo {
   barcode: string;
@@ -75,6 +76,10 @@ class UpcItemDbProvider implements BarcodeProvider {
         price: parseToCents(item.lowest_recorded_price ?? item.highest_recorded_price ?? null),
         source: "online",
       };
+
+      // Download and store the image bytes locally, then persist the local path
+      // (so the picture, like the product info, is served from the app on repeat use).
+      info.imageUrl = await cacheProductImage(barcode, info.imageUrl);
 
       // Cache into the local catalogue for next time.
       await prisma.product.upsert({

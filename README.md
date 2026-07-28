@@ -17,7 +17,9 @@ for reporting.
   onto the user's account automatically.
 - **Barcode scanning** — live camera scanning (ZXing) or manual entry; barcodes are looked
   up in a seeded retail catalogue (or online), a product image is shown, and a quantity is
-  solicited.
+  solicited. An online lookup happens **only the first time** a barcode is seen: the product
+  info **and the image bytes** are then stored locally, so every repeat use is served entirely
+  from the app with no external calls.
 - **Reconciliation** — scanned products are fuzzily matched and linked to receipt line items
   (auto on scan, and manually adjustable).
 - **Assignment & reporting** — assign a session to a job or a travel/meeting reason; the
@@ -97,8 +99,9 @@ src/app/...                   UI (login, dashboard, session detail, reports, acc
 
 ## Notes / production hardening
 
-- Receipt images are stored on local disk under `public/uploads` for dev — swap for object
-  storage (S3/GCS) in production.
+- Uploaded files live under `public/uploads` (receipt images in `public/uploads/`, cached
+  product images in `public/uploads/products/`). They're served by nginx in production and by
+  a built-in `/uploads/[...path]` route otherwise — swap for object storage (S3/GCS) at scale.
 - The auth session is a signed stateless cookie; move to a session store + CSRF protection
   and rate limiting for production.
 - Set a strong `AUTH_SECRET` and switch `DATABASE_URL` to Postgres.
