@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { LogoMark } from "@/components/Logo";
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -33,9 +34,10 @@ export default function RegisterPage() {
 
   return (
     <main className="mx-auto flex min-h-screen max-w-md flex-col justify-center px-6">
-      <div className="mb-8 text-center">
-        <h1 className="text-2xl font-bold text-brand">AmReceipts</h1>
-        <p className="mt-1 text-sm text-slate-500">Create your account</p>
+      <div className="mb-8 flex flex-col items-center text-center">
+        <LogoMark className="h-20" />
+        <h1 className="mt-4 text-xl font-bold text-content">AmReceipts</h1>
+        <p className="mt-1 text-sm text-muted">Create your account</p>
       </div>
       <form onSubmit={submit} className="card space-y-4 p-6">
         <div>
@@ -56,19 +58,20 @@ export default function RegisterPage() {
             minLength={8}
             required
           />
-          <p className="mt-1 text-xs text-slate-400">At least 8 characters.</p>
+          <p className="mt-1 text-smallest text-muted">At least 8 characters.</p>
         </div>
-        {error && <p className="text-sm text-red-600">{error}</p>}
+        {error && <p className="text-sm text-red-300">{error}</p>}
         <button className="btn-primary w-full" disabled={busy}>
           {busy ? "Creating…" : "Create account"}
         </button>
-        <p className="text-center text-sm text-slate-500">
+        <p className="text-center text-sm text-muted">
           Already have an account?{" "}
           <Link href="/login" className="font-medium text-brand hover:underline">
             Sign in
           </Link>
         </p>
       </form>
+      <p className="mt-6 text-center text-smallest text-muted/70">Samaritan Technical Services</p>
     </main>
   );
 }

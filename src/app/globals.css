@@ -3,36 +3,49 @@
 @tailwind utilities;
 
 :root {
-  color-scheme: light;
+  color-scheme: dark;
+  /* Samaritech brand type: Arial/Helvetica; 10px is the smallest brand size. */
+  --font-smallest: 10px;
+}
+
+html {
+  font-family: Arial, Helvetica, sans-serif;
+  /* Compact base sized from the Samaritech scale (their smallest is 10px). */
+  font-size: 13px;
 }
 
 body {
-  @apply bg-slate-50 text-slate-900 antialiased;
+  @apply bg-ink text-content antialiased;
 }
 
 @layer components {
   .btn {
-    @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50;
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50;
   }
   .btn-primary {
-    @apply btn bg-brand text-white hover:bg-brand-dark;
+    @apply btn bg-brand text-brand-fg hover:bg-brand-dark;
   }
   .btn-secondary {
-    @apply btn border border-slate-300 bg-white text-slate-700 hover:bg-slate-100;
+    @apply btn border border-line bg-panel2 text-content hover:bg-line;
   }
   .btn-danger {
-    @apply btn border border-red-200 bg-white text-red-600 hover:bg-red-50;
+    @apply btn border border-red-500/40 bg-transparent text-red-300 hover:bg-red-500/10;
   }
   .card {
-    @apply rounded-xl border border-slate-200 bg-white shadow-sm;
+    @apply rounded-xl border border-line bg-panel shadow-sm;
   }
   .input {
-    @apply w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20;
+    @apply w-full rounded-lg border border-line bg-panel2 px-3 py-2 text-sm text-content outline-none placeholder:text-muted/60 focus:border-brand focus:ring-2 focus:ring-brand/25;
   }
   .label {
-    @apply mb-1 block text-sm font-medium text-slate-700;
+    @apply mb-1 block text-xs font-medium uppercase tracking-wide text-muted;
   }
   .badge {
-    @apply inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium;
+    @apply inline-flex items-center rounded-full px-2.5 py-0.5 font-medium;
+    font-size: var(--font-smallest);
+  }
+  /* Smallest brand type step, for captions/help text. */
+  .text-smallest {
+    font-size: var(--font-smallest);
   }
 }

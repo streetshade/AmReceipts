@@ -25,6 +25,27 @@ for reporting.
 - **Assignment & reporting** — assign a session to a job or a travel/meeting reason; the
   Reports page aggregates spend by job, by reason and by payment method.
 
+## Branding
+
+The interface is themed for **Samaritech (Samaritan Technical Services)**: a dark
+desaturated-teal ground with a vivid cyan primary accent and a warm gold secondary
+accent (palette taken from the reference dashboard image), the Samaritech logo, and
+the Arial/Helvetica brand type (10px is the smallest brand size). Logo assets live in
+`public/brand/`; the palette and type are defined in `tailwind.config.ts` and
+`src/app/globals.css`.
+
+## Deferred barcode lookups (rate limiting)
+
+The upcitemdb trial endpoint allows ~100 lookups/day. When that limit is hit, a lookup
+**fails gracefully** — the item is still recorded by barcode — and the barcode is queued
+in `PendingLookup` for a retry **24 hours later**, when the quota resets. On a successful
+retry the product is cached and any items scanned before it resolved are backfilled with
+the product details automatically.
+
+Retries run opportunistically on scans/lookups, and can also be driven on a schedule via
+`POST /api/maintenance/retry-lookups` (guarded by `CRON_SECRET`) — see
+[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for the cron setup.
+
 ## Tech stack
 
 - **Next.js 14** (App Router) + TypeScript + Tailwind CSS

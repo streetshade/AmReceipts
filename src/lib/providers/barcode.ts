@@ -1,6 +1,7 @@
 import { prisma } from "../db";
 import { parseToCents } from "../money";
 import { cacheProductImage } from "../productImages";
+import { enqueuePendingLookup, clearPendingLookup } from "../pendingLookups";
 
 export interface ProductInfo {
   barcode: string;
@@ -12,9 +13,17 @@ export interface ProductInfo {
   source: "local" | "online";
 }
 
+// A lookup either resolves to a product, finds nothing, or is deferred because
+// the upcitemdb daily limit was reached (rateLimited). Callers distinguish the
+// last case to inform the user and rely on the 24h retry queue.
+export interface LookupResult {
+  product: ProductInfo | null;
+  rateLimited: boolean;
+}
+
 export interface BarcodeProvider {
   readonly name: string;
-  lookup(barcode: string): Promise<ProductInfo | null>;
+  lookup(barcode: string): Promise<LookupResult>;
 }
 
 function normalize(barcode: string): string {
@@ -38,23 +47,31 @@ async function lookupLocal(barcode: string): Promise<ProductInfo | null> {
 
 class LocalBarcodeProvider implements BarcodeProvider {
   readonly name = "local";
-  async lookup(barcode: string): Promise<ProductInfo | null> {
-    return lookupLocal(normalize(barcode));
+  async lookup(barcode: string): Promise<LookupResult> {
+    return { product: await lookupLocal(normalize(barcode)), rateLimited: false };
   }
 }
 
+// upcitemdb signals quota problems with HTTP 429 and/or a body code like
+// EXCEED_LIMIT / TOO_FAST. Treat any of these as "rate limited → defer".
+function isRateLimited(status: number, code?: string): boolean {
+  if (status === 429) return true;
+  return Boolean(code && /LIMIT|EXCEED|TOO_FAST/i.test(code));
+}
+
 /**
- * Online lookup via upcitemdb's trial endpoint (keyless at low volume), falling
- * back to the local DB. Any product found online is cached into the local DB so
- * it grows into a richer catalogue over time.
+ * Online lookup via upcitemdb's trial endpoint (100 lookups/day, keyless),
+ * falling back to the local DB. Products found online are cached locally so the
+ * catalogue grows over time. When the daily limit is hit, the lookup fails
+ * gracefully and the barcode is queued for a retry ~24h later.
  */
 class UpcItemDbProvider implements BarcodeProvider {
   readonly name = "upcitemdb";
 
-  async lookup(barcodeRaw: string): Promise<ProductInfo | null> {
+  async lookup(barcodeRaw: string): Promise<LookupResult> {
     const barcode = normalize(barcodeRaw);
     const local = await lookupLocal(barcode);
-    if (local) return local;
+    if (local) return { product: local, rateLimited: false };
 
     try {
       const res = await fetch(`https://api.upcitemdb.com/prod/trial/lookup?upc=${encodeURIComponent(barcode)}`, {
@@ -62,10 +79,25 @@ class UpcItemDbProvider implements BarcodeProvider {
         // Never hang the request path on a slow third party.
         signal: AbortSignal.timeout(6000),
       });
-      if (!res.ok) return null;
-      const data = (await res.json()) as { items?: Array<Record<string, any>> };
+
+      const data = (await res.json().catch(() => ({}))) as {
+        items?: Array<Record<string, any>>;
+        code?: string;
+      };
+
+      if (isRateLimited(res.status, data.code)) {
+        // Daily quota exhausted — defer and retry in 24h.
+        await enqueuePendingLookup(barcode, data.code || `http_${res.status}`);
+        return { product: null, rateLimited: true };
+      }
+      if (!res.ok) return { product: null, rateLimited: false };
+
       const item = data.items?.[0];
-      if (!item) return null;
+      if (!item) {
+        // Genuinely nothing online; make sure it isn't left queued.
+        await clearPendingLookup(barcode);
+        return { product: null, rateLimited: false };
+      }
 
       const info: ProductInfo = {
         barcode,
@@ -95,10 +127,13 @@ class UpcItemDbProvider implements BarcodeProvider {
         },
       });
 
-      return info;
+      // Resolved — clear any prior deferral.
+      await clearPendingLookup(barcode);
+
+      return { product: info, rateLimited: false };
     } catch {
       // Network/timeout/parse issues degrade gracefully to "not found".
-      return null;
+      return { product: null, rateLimited: false };
     }
   }
 }

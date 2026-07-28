@@ -20,9 +20,9 @@ interface SessionRow {
 
 function StatusBadge({ status }: { status: string }) {
   const styles: Record<string, string> = {
-    open: "bg-amber-100 text-amber-800",
-    assigned: "bg-emerald-100 text-emerald-800",
-    closed: "bg-slate-200 text-slate-600",
+    open: "bg-amber-500/15 text-amber-300",
+    assigned: "bg-emerald-500/15 text-emerald-300",
+    closed: "bg-panel2 text-muted",
   };
   return <span className={`badge ${styles[status] ?? styles.open}`}>{status}</span>;
 }
@@ -78,7 +78,7 @@ export default function DashboardClient({ initialSessions }: { initialSessions: 
       </form>
 
       {initialSessions.length === 0 ? (
-        <div className="card p-8 text-center text-slate-500">
+        <div className="card p-8 text-center text-muted">
           No sessions yet. Start one above, then scan receipts and product barcodes.
         </div>
       ) : (
@@ -92,8 +92,8 @@ export default function DashboardClient({ initialSessions }: { initialSessions: 
                       <h2 className="font-semibold">{s.name}</h2>
                       <StatusBadge status={s.status} />
                     </div>
-                    <p className="mt-1 text-sm text-slate-500">{assignmentLabel(s)}</p>
-                    <p className="mt-2 text-xs text-slate-400">
+                    <p className="mt-1 text-sm text-muted">{assignmentLabel(s)}</p>
+                    <p className="mt-2 text-xs text-muted">
                       {s.receiptCount} receipt{s.receiptCount === 1 ? "" : "s"} · {s.itemCount} scanned item
                       {s.itemCount === 1 ? "" : "s"} · {new Date(s.createdAt).toLocaleDateString()}
                     </p>

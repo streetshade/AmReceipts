@@ -2,6 +2,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { handler, json, error, requireUserId } from "@/lib/api";
 import { getBarcodeProvider } from "@/lib/providers/barcode";
+import { retryDuePendingLookups } from "@/lib/pendingLookups";
 import { bestLineItemMatch, MatchCandidate } from "@/lib/matching";
 
 type Params = { params: { id: string } };
@@ -22,9 +23,12 @@ export const POST = handler(async (req: Request, { params }: Params) => {
   if (!parsed.success) return error(parsed.error.issues[0]?.message ?? "Invalid input", 422);
   const { barcode, quantity } = parsed.data;
 
-  const info = await getBarcodeProvider().lookup(barcode);
+  const { product: info, rateLimited } = await getBarcodeProvider().lookup(barcode);
   const product = info ? await prisma.product.findUnique({ where: { barcode } }) : null;
   const name = info?.name ?? `Unknown item (${barcode})`;
+
+  // Opportunistically retry any deferred lookups whose 24h window has elapsed.
+  void retryDuePendingLookups().catch(() => {});
 
   // Attempt to reconcile against still-unlinked receipt line items in this session.
   const unlinked = await prisma.lineItem.findMany({
@@ -46,5 +50,8 @@ export const POST = handler(async (req: Request, { params }: Params) => {
     include: { product: true, lineItem: true },
   });
 
-  return json({ scannedItem: scanned, matched: Boolean(lineItemId), found: Boolean(info) }, 201);
+  return json(
+    { scannedItem: scanned, matched: Boolean(lineItemId), found: Boolean(info), rateLimited },
+    201,
+  );
 });

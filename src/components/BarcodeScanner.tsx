@@ -58,7 +58,7 @@ export default function BarcodeScanner({ onDetected }: { onDetected: (code: stri
 
   return (
     <div className="space-y-3">
-      <div className="relative overflow-hidden rounded-lg bg-slate-900">
+      <div className="relative overflow-hidden rounded-lg bg-black">
         <video ref={videoRef} className="aspect-video w-full object-cover" muted playsInline />
         {!scanning && (
           <div className="absolute inset-0 flex items-center justify-center">
@@ -79,7 +79,7 @@ export default function BarcodeScanner({ onDetected }: { onDetected: (code: stri
           Stop camera
         </button>
       )}
-      {error && <p className="text-sm text-amber-600">{error}</p>}
+      {error && <p className="text-sm text-amber-300">{error}</p>}
 
       <form onSubmit={submitManual} className="flex gap-2">
         <input

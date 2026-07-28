@@ -143,6 +143,21 @@ model Product {
   createdAt DateTime @default(now())
 }
 
+// A barcode whose online lookup was deferred because the upcitemdb daily limit
+// was hit. It is retried after `retryAfter` (24h later, when the trial quota
+// resets); on success the product is cached and any scanned items backfilled.
+model PendingLookup {
+  id         String   @id @default(cuid())
+  barcode    String   @unique
+  attempts   Int      @default(0)
+  lastError  String?
+  retryAfter DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([retryAfter])
+}
+
 // A physical product scanned into a session.
 model ScannedItem {
   id        String         @id @default(cuid())

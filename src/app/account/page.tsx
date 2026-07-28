@@ -29,25 +29,25 @@ export default async function AccountPage() {
       <main className="mx-auto max-w-4xl space-y-6 px-4 py-6">
         <div>
           <h1 className="text-xl font-semibold">Account</h1>
-          <p className="text-sm text-slate-500">
+          <p className="text-sm text-muted">
             {user.name} · {user.email}
           </p>
         </div>
 
         <section className="card overflow-hidden">
-          <div className="border-b border-slate-100 px-4 py-3 font-semibold">Payment methods</div>
-          <p className="px-4 pt-3 text-xs text-slate-400">
+          <div className="border-b border-line px-4 py-3 font-semibold">Payment methods</div>
+          <p className="px-4 pt-3 text-xs text-muted">
             Automatically added to your account when a receipt reveals the method used.
           </p>
           {paymentMethods.length === 0 ? (
-            <p className="px-4 py-6 text-center text-sm text-slate-400">None yet.</p>
+            <p className="px-4 py-6 text-center text-sm text-muted">None yet.</p>
           ) : (
-            <ul className="divide-y divide-slate-100">
+            <ul className="divide-y divide-line">
               {paymentMethods.map((m) => (
                 <li key={m.id} className="flex items-center justify-between px-4 py-3">
                   <div>
                     <div className="font-medium">{m.label}</div>
-                    <div className="text-xs text-slate-400 capitalize">
+                    <div className="text-xs text-muted capitalize">
                       {m.type}
                       {m._count.receipts ? ` · ${m._count.receipts} receipt${m._count.receipts === 1 ? "" : "s"}` : ""}
                     </div>
@@ -62,11 +62,11 @@ export default async function AccountPage() {
         </section>
 
         <section className="card overflow-hidden">
-          <div className="border-b border-slate-100 px-4 py-3 font-semibold">Jobs</div>
+          <div className="border-b border-line px-4 py-3 font-semibold">Jobs</div>
           {jobs.length === 0 ? (
-            <p className="px-4 py-6 text-center text-sm text-slate-400">No jobs yet.</p>
+            <p className="px-4 py-6 text-center text-sm text-muted">No jobs yet.</p>
           ) : (
-            <ul className="divide-y divide-slate-100">
+            <ul className="divide-y divide-line">
               {jobs.map((j) => {
                 const total = j.sessions.reduce(
                   (acc, s) => acc + s.receipts.reduce((a, r) => a + (r.total ?? 0), 0),
@@ -76,11 +76,11 @@ export default async function AccountPage() {
                   <li key={j.id} className="flex items-center justify-between px-4 py-3">
                     <div>
                       <div className="font-medium">{j.number}</div>
-                      {j.name && <div className="text-xs text-slate-400">{j.name}</div>}
+                      {j.name && <div className="text-xs text-muted">{j.name}</div>}
                     </div>
                     <div className="text-right">
                       <div className="font-medium">{formatCents(total)}</div>
-                      <div className="text-xs text-slate-400">
+                      <div className="text-xs text-muted">
                         {j.sessions.length} session{j.sessions.length === 1 ? "" : "s"}
                       </div>
                     </div>

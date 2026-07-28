@@ -43,14 +43,14 @@ export default function ReceiptPanel({ session, onChange }: { session: SessionDT
         <button className="btn-primary w-full" disabled={uploading} onClick={() => fileRef.current?.click()}>
           {uploading ? "Processing receipt…" : "📷 Scan a receipt"}
         </button>
-        <p className="mt-2 text-center text-xs text-slate-400">
+        <p className="mt-2 text-center text-xs text-muted">
           Take a photo of a receipt. It’s OCR-processed for merchant, date, line items and payment method.
         </p>
-        {error && <p className="mt-2 text-center text-sm text-red-600">{error}</p>}
+        {error && <p className="mt-2 text-center text-sm text-red-300">{error}</p>}
       </div>
 
       {session.receipts.length === 0 ? (
-        <div className="card p-8 text-center text-slate-500">No receipts yet.</div>
+        <div className="card p-8 text-center text-muted">No receipts yet.</div>
       ) : (
         session.receipts.map((r) => <ReceiptCard key={r.id} receipt={r} onChange={onChange} />)
       )}
@@ -136,12 +136,12 @@ function ReceiptCard({ receipt, onChange }: { receipt: ReceiptDTO; onChange: () 
               <div className="flex items-center gap-2">
                 <h3 className="truncate font-semibold">{receipt.merchant ?? "Unknown merchant"}</h3>
                 <span
-                  className={`badge ${verified ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}
+                  className={`badge ${verified ? "bg-emerald-500/15 text-emerald-300" : "bg-amber-500/15 text-amber-300"}`}
                 >
                   {verified ? "verified" : receipt.status}
                 </span>
               </div>
-              <p className="text-sm text-slate-500">
+              <p className="text-sm text-muted">
                 {receipt.purchaseDate ? new Date(receipt.purchaseDate).toLocaleDateString() : "No date"}
                 {receipt.paymentLabel && <> · {receipt.paymentLabel}</>}
               </p>
@@ -176,20 +176,20 @@ function ReceiptCard({ receipt, onChange }: { receipt: ReceiptDTO; onChange: () 
       </div>
 
       {/* Line items */}
-      <div className="border-t border-slate-100 px-4 py-3">
-        <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Line items</div>
+      <div className="border-t border-line px-4 py-3">
+        <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">Line items</div>
         {!editing ? (
           receipt.lineItems.length === 0 ? (
-            <p className="text-sm text-slate-400">No line items detected.</p>
+            <p className="text-sm text-muted">No line items detected.</p>
           ) : (
-            <ul className="divide-y divide-slate-100">
+            <ul className="divide-y divide-line">
               {receipt.lineItems.map((li) => (
                 <li key={li.id} className="flex items-center justify-between gap-3 py-1.5 text-sm">
                   <span className="truncate">
-                    {li.quantity > 1 && <span className="text-slate-400">{li.quantity}× </span>}
+                    {li.quantity > 1 && <span className="text-muted">{li.quantity}× </span>}
                     {li.description}
                     {li.linkedScannedItemId && (
-                      <span className="ml-2 badge bg-blue-100 text-blue-700">🔗 linked</span>
+                      <span className="ml-2 badge bg-brand/15 text-brand">🔗 linked</span>
                     )}
                   </span>
                   <span className="shrink-0 font-medium">{formatCents(li.amount)}</span>
@@ -226,7 +226,7 @@ function ReceiptCard({ receipt, onChange }: { receipt: ReceiptDTO; onChange: () 
                 />
                 <button
                   type="button"
-                  className="px-2 text-slate-400 hover:text-red-500"
+                  className="px-2 text-muted hover:text-red-300"
                   onClick={() => setItems((arr) => arr.filter((_, i) => i !== idx))}
                 >
                   ✕
@@ -245,7 +245,7 @@ function ReceiptCard({ receipt, onChange }: { receipt: ReceiptDTO; onChange: () 
       </div>
 
       {/* Actions */}
-      <div className="flex items-center justify-end gap-2 border-t border-slate-100 bg-slate-50 px-4 py-2">
+      <div className="flex items-center justify-end gap-2 border-t border-line bg-panel2 px-4 py-2">
         {editing ? (
           <>
             <button className="btn-secondary" onClick={() => setEditing(false)} disabled={busy}>

@@ -116,7 +116,20 @@ sudo certbot --nginx -d receipts.example.com
 Visit `https://receipts.example.com` and sign in with the seeded demo account
 (`demo@amreceipts.app` / `password123`) or register.
 
-## 9. Updating
+## 9. Deferred-lookup retries (cron)
+
+When upcitemdb's daily limit is hit, barcodes are queued for a retry 24h later.
+Retries also run opportunistically on user activity, but a small cron ensures
+they happen promptly even when idle. Set `CRON_SECRET` in the env file, then:
+
+```bash
+sudo crontab -e
+# hourly: process any deferred lookups whose 24h window has elapsed
+0 * * * * curl -s -X POST -H "x-cron-secret: YOUR_CRON_SECRET" \
+  https://receipts.example.com/api/maintenance/retry-lookups >/dev/null
+```
+
+## 10. Updating
 
 ```bash
 cd /opt/amreceipts

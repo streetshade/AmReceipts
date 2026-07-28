@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { LogoMark } from "@/components/Logo";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -32,9 +33,10 @@ export default function LoginPage() {
 
   return (
     <main className="mx-auto flex min-h-screen max-w-md flex-col justify-center px-6">
-      <div className="mb-8 text-center">
-        <h1 className="text-2xl font-bold text-brand">AmReceipts</h1>
-        <p className="mt-1 text-sm text-slate-500">Sign in to capture expenses</p>
+      <div className="mb-8 flex flex-col items-center text-center">
+        <LogoMark className="h-20" />
+        <h1 className="mt-4 text-xl font-bold text-content">AmReceipts</h1>
+        <p className="mt-1 text-sm text-muted">Sign in to capture expenses</p>
       </div>
       <form onSubmit={submit} className="card space-y-4 p-6">
         <div>
@@ -51,20 +53,21 @@ export default function LoginPage() {
             required
           />
         </div>
-        {error && <p className="text-sm text-red-600">{error}</p>}
+        {error && <p className="text-sm text-red-300">{error}</p>}
         <button className="btn-primary w-full" disabled={busy}>
           {busy ? "Signing in…" : "Sign in"}
         </button>
-        <p className="text-center text-sm text-slate-500">
+        <p className="text-center text-sm text-muted">
           No account?{" "}
           <Link href="/register" className="font-medium text-brand hover:underline">
             Create one
           </Link>
         </p>
       </form>
-      <p className="mt-4 text-center text-xs text-slate-400">
+      <p className="mt-4 text-center text-smallest text-muted">
         Demo login is pre-filled: demo@amreceipts.app / password123
       </p>
+      <p className="mt-6 text-center text-smallest text-muted/70">Samaritan Technical Services</p>
     </main>
   );
 }

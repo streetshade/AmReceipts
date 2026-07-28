@@ -49,7 +49,7 @@ export default function AssignmentPanel({ session, onChange }: { session: Sessio
     <div className="card p-4">
       <div className="flex items-center justify-between">
         <div>
-          <div className="text-xs uppercase tracking-wide text-slate-400">Assigned to</div>
+          <div className="text-xs uppercase tracking-wide text-muted">Assigned to</div>
           <div className="font-medium capitalize">{currentLabel}</div>
         </div>
         <button className="btn-secondary" onClick={() => setOpen((o) => !o)}>
@@ -58,7 +58,7 @@ export default function AssignmentPanel({ session, onChange }: { session: Sessio
       </div>
 
       {open && (
-        <form onSubmit={save} className="mt-4 space-y-4 border-t border-slate-100 pt-4">
+        <form onSubmit={save} className="mt-4 space-y-4 border-t border-line pt-4">
           <div className="flex gap-2">
             {(["job", "travel", "meeting"] as const).map((m) => (
               <button
@@ -66,7 +66,7 @@ export default function AssignmentPanel({ session, onChange }: { session: Sessio
                 key={m}
                 onClick={() => setMode(m)}
                 className={`flex-1 rounded-lg border px-3 py-2 text-sm font-medium capitalize ${
-                  mode === m ? "border-brand bg-brand/10 text-brand" : "border-slate-300 text-slate-600"
+                  mode === m ? "border-brand bg-brand/10 text-brand" : "border-line text-muted"
                 }`}
               >
                 {m}
@@ -103,7 +103,7 @@ export default function AssignmentPanel({ session, onChange }: { session: Sessio
             </div>
           )}
 
-          {error && <p className="text-sm text-red-600">{error}</p>}
+          {error && <p className="text-sm text-red-300">{error}</p>}
           <button className="btn-primary" disabled={busy}>
             {busy ? "Saving…" : "Save assignment"}
           </button>

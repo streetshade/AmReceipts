@@ -1,5 +1,6 @@
 import { handler, json, error, requireUserId } from "@/lib/api";
 import { getBarcodeProvider } from "@/lib/providers/barcode";
+import { retryDuePendingLookups } from "@/lib/pendingLookups";
 
 type Params = { params: { code: string } };
 
@@ -10,7 +11,11 @@ export const GET = handler(async (_req: Request, { params }: Params) => {
   const code = decodeURIComponent(params.code).trim();
   if (!/^\d{6,14}$/.test(code)) return error("Not a valid barcode", 422);
 
-  const info = await getBarcodeProvider().lookup(code);
-  if (!info) return json({ found: false, barcode: code });
-  return json({ found: true, product: info });
+  const { product, rateLimited } = await getBarcodeProvider().lookup(code);
+
+  // Opportunistically retry any deferred lookups whose 24h window has elapsed.
+  void retryDuePendingLookups().catch(() => {});
+
+  if (!product) return json({ found: false, barcode: code, rateLimited });
+  return json({ found: true, product, rateLimited: false });
 });
