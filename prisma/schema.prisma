@@ -1,0 +1,165 @@
+// AmReceipts data model.
+// SQLite for zero-config local dev; swap `provider` to "postgresql" for production.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String @id @default(cuid())
+  email        String @unique
+  name         String
+  passwordHash String
+
+  sessions       ExpenseSession[]
+  paymentMethods PaymentMethod[]
+  jobs           Job[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// A payment method belongs to a user's account. Receipts that reveal a payment
+// method (e.g. "VISA ****1234") get reconciled against these, creating one if new.
+model PaymentMethod {
+  id        String  @id @default(cuid())
+  userId    String
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // "card" | "cash" | "other"
+  type      String  @default("card")
+  // Card brand where known: VISA, MASTERCARD, AMEX, ...
+  brand     String?
+  last4     String?
+  label     String // Human label, e.g. "VISA ****1234" or "Cash"
+
+  receipts Receipt[]
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, label])
+}
+
+// Optional job / cost centre a session's spend can be booked against.
+model Job {
+  id       String @id @default(cuid())
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  number   String
+  name     String?
+
+  sessions ExpenseSession[]
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, number])
+}
+
+// A capture session: one trip / errand / expense-worthy event. Groups receipts
+// and scanned products, and carries the assignment to a job or a travel reason.
+model ExpenseSession {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name   String
+  // "open" | "assigned" | "closed"
+  status String @default("open")
+
+  // Assignment: either a job, or a free-form travel/meeting reason. Not both required.
+  jobId      String?
+  job        Job?    @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  // "job" | "travel" | "meeting" | null
+  reasonType String?
+  reasonNote String?
+
+  receipts     Receipt[]
+  scannedItems ScannedItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Receipt {
+  id        String         @id @default(cuid())
+  sessionId String
+  session   ExpenseSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  imagePath String? // path under /public/uploads
+
+  // OCR-extracted + user-verifiable header fields.
+  merchant     String?
+  purchaseDate DateTime?
+  subtotal     Int? // all money stored as integer cents
+  tax          Int?
+  total        Int?
+
+  paymentMethodId String?
+  paymentMethod   PaymentMethod? @relation(fields: [paymentMethodId], references: [id], onDelete: SetNull)
+  // Raw method string read from the receipt before reconciliation, e.g. "VISA ****1234"
+  paymentRaw      String?
+
+  // "pending" (awaiting OCR) | "processed" | "verified" (user confirmed) | "failed"
+  status  String  @default("pending")
+  rawText String?
+
+  lineItems LineItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model LineItem {
+  id          String  @id @default(cuid())
+  receiptId   String
+  receipt     Receipt @relation(fields: [receiptId], references: [id], onDelete: Cascade)
+  description String
+  quantity    Int     @default(1)
+  amount      Int // cents, line total
+
+  // A scanned product may link to this line item (barcode <-> receipt reconciliation).
+  scannedItem ScannedItem?
+
+  createdAt DateTime @default(now())
+}
+
+// The seeded / online-looked-up product catalogue keyed by barcode.
+model Product {
+  id       String  @id @default(cuid())
+  barcode  String  @unique
+  name     String
+  brand    String?
+  category String?
+  imageUrl String?
+  // Reference price in cents, where known.
+  price    Int?
+
+  scannedItems ScannedItem[]
+
+  createdAt DateTime @default(now())
+}
+
+// A physical product scanned into a session.
+model ScannedItem {
+  id        String         @id @default(cuid())
+  sessionId String
+  session   ExpenseSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  barcode   String
+  productId String?
+  product   Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  // Snapshot of name at scan time (in case lookup fails / product changes).
+  name     String
+  quantity Int    @default(1)
+
+  // Optional link to a receipt line item this product reconciles against.
+  lineItemId String?   @unique
+  lineItem   LineItem? @relation(fields: [lineItemId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+}

@@ -1,0 +1,276 @@
+"use client";
+
+import { useRef, useState } from "react";
+import type { ReceiptDTO, SessionDTO } from "@/lib/dto";
+import { formatCents, parseToCents } from "@/lib/money";
+
+export default function ReceiptPanel({ session, onChange }: { session: SessionDTO; onChange: () => void }) {
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function upload(file: File) {
+    setUploading(true);
+    setError(null);
+    const form = new FormData();
+    form.append("image", file);
+    const res = await fetch(`/api/sessions/${session.id}/receipts`, { method: "POST", body: form });
+    setUploading(false);
+    if (fileRef.current) fileRef.current.value = "";
+    if (res.ok) {
+      onChange();
+    } else {
+      const data = await res.json().catch(() => ({}));
+      setError(data.error ?? "Upload failed");
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Capture */}
+      <div className="card p-4">
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/*"
+          capture="environment"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) upload(f);
+          }}
+        />
+        <button className="btn-primary w-full" disabled={uploading} onClick={() => fileRef.current?.click()}>
+          {uploading ? "Processing receipt…" : "📷 Scan a receipt"}
+        </button>
+        <p className="mt-2 text-center text-xs text-slate-400">
+          Take a photo of a receipt. It’s OCR-processed for merchant, date, line items and payment method.
+        </p>
+        {error && <p className="mt-2 text-center text-sm text-red-600">{error}</p>}
+      </div>
+
+      {session.receipts.length === 0 ? (
+        <div className="card p-8 text-center text-slate-500">No receipts yet.</div>
+      ) : (
+        session.receipts.map((r) => <ReceiptCard key={r.id} receipt={r} onChange={onChange} />)
+      )}
+    </div>
+  );
+}
+
+function ReceiptCard({ receipt, onChange }: { receipt: ReceiptDTO; onChange: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  // Edit buffers
+  const [merchant, setMerchant] = useState(receipt.merchant ?? "");
+  const [date, setDate] = useState(receipt.purchaseDate ? receipt.purchaseDate.slice(0, 10) : "");
+  const [paymentRaw, setPaymentRaw] = useState(receipt.paymentRaw ?? "");
+  const [total, setTotal] = useState(receipt.total != null ? (receipt.total / 100).toFixed(2) : "");
+  const [items, setItems] = useState(
+    receipt.lineItems.map((li) => ({
+      description: li.description,
+      quantity: li.quantity,
+      amount: (li.amount / 100).toFixed(2),
+    })),
+  );
+
+  const verified = receipt.status === "verified";
+
+  async function save() {
+    setBusy(true);
+    const body = {
+      merchant: merchant || null,
+      purchaseDate: date ? new Date(date + "T00:00:00Z").toISOString() : null,
+      paymentRaw: paymentRaw || null,
+      total: parseToCents(total),
+      status: "verified" as const,
+      lineItems: items
+        .filter((i) => i.description.trim())
+        .map((i) => ({
+          description: i.description.trim(),
+          quantity: Math.max(1, Number(i.quantity) || 1),
+          amount: parseToCents(i.amount) ?? 0,
+        })),
+    };
+    const res = await fetch(`/api/receipts/${receipt.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    setBusy(false);
+    if (res.ok) {
+      setEditing(false);
+      onChange();
+    }
+  }
+
+  async function remove() {
+    if (!confirm("Delete this receipt?")) return;
+    setBusy(true);
+    await fetch(`/api/receipts/${receipt.id}`, { method: "DELETE" });
+    onChange();
+  }
+
+  async function verify() {
+    setBusy(true);
+    await fetch(`/api/receipts/${receipt.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "verified" }),
+    });
+    setBusy(false);
+    onChange();
+  }
+
+  return (
+    <div className="card overflow-hidden">
+      <div className="flex gap-4 p-4">
+        {receipt.imagePath && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={receipt.imagePath} alt="Receipt" className="h-24 w-20 shrink-0 rounded object-cover" />
+        )}
+        <div className="min-w-0 flex-1">
+          {!editing ? (
+            <>
+              <div className="flex items-center gap-2">
+                <h3 className="truncate font-semibold">{receipt.merchant ?? "Unknown merchant"}</h3>
+                <span
+                  className={`badge ${verified ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}
+                >
+                  {verified ? "verified" : receipt.status}
+                </span>
+              </div>
+              <p className="text-sm text-slate-500">
+                {receipt.purchaseDate ? new Date(receipt.purchaseDate).toLocaleDateString() : "No date"}
+                {receipt.paymentLabel && <> · {receipt.paymentLabel}</>}
+              </p>
+              <div className="mt-1 text-lg font-semibold">{formatCents(receipt.total)}</div>
+            </>
+          ) : (
+            <div className="grid gap-2 sm:grid-cols-2">
+              <div>
+                <label className="label">Merchant</label>
+                <input className="input" value={merchant} onChange={(e) => setMerchant(e.target.value)} />
+              </div>
+              <div>
+                <label className="label">Date</label>
+                <input className="input" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+              </div>
+              <div>
+                <label className="label">Payment method</label>
+                <input
+                  className="input"
+                  placeholder="VISA ****1234 / CASH"
+                  value={paymentRaw}
+                  onChange={(e) => setPaymentRaw(e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="label">Total</label>
+                <input className="input" inputMode="decimal" value={total} onChange={(e) => setTotal(e.target.value)} />
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Line items */}
+      <div className="border-t border-slate-100 px-4 py-3">
+        <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Line items</div>
+        {!editing ? (
+          receipt.lineItems.length === 0 ? (
+            <p className="text-sm text-slate-400">No line items detected.</p>
+          ) : (
+            <ul className="divide-y divide-slate-100">
+              {receipt.lineItems.map((li) => (
+                <li key={li.id} className="flex items-center justify-between gap-3 py-1.5 text-sm">
+                  <span className="truncate">
+                    {li.quantity > 1 && <span className="text-slate-400">{li.quantity}× </span>}
+                    {li.description}
+                    {li.linkedScannedItemId && (
+                      <span className="ml-2 badge bg-blue-100 text-blue-700">🔗 linked</span>
+                    )}
+                  </span>
+                  <span className="shrink-0 font-medium">{formatCents(li.amount)}</span>
+                </li>
+              ))}
+            </ul>
+          )
+        ) : (
+          <div className="space-y-2">
+            {items.map((it, idx) => (
+              <div key={idx} className="flex gap-2">
+                <input
+                  className="input flex-1"
+                  value={it.description}
+                  onChange={(e) =>
+                    setItems((arr) => arr.map((x, i) => (i === idx ? { ...x, description: e.target.value } : x)))
+                  }
+                />
+                <input
+                  className="input w-14"
+                  inputMode="numeric"
+                  value={it.quantity}
+                  onChange={(e) =>
+                    setItems((arr) => arr.map((x, i) => (i === idx ? { ...x, quantity: Number(e.target.value) } : x)))
+                  }
+                />
+                <input
+                  className="input w-24"
+                  inputMode="decimal"
+                  value={it.amount}
+                  onChange={(e) =>
+                    setItems((arr) => arr.map((x, i) => (i === idx ? { ...x, amount: e.target.value } : x)))
+                  }
+                />
+                <button
+                  type="button"
+                  className="px-2 text-slate-400 hover:text-red-500"
+                  onClick={() => setItems((arr) => arr.filter((_, i) => i !== idx))}
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => setItems((arr) => [...arr, { description: "", quantity: 1, amount: "0.00" }])}
+            >
+              + Add line item
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Actions */}
+      <div className="flex items-center justify-end gap-2 border-t border-slate-100 bg-slate-50 px-4 py-2">
+        {editing ? (
+          <>
+            <button className="btn-secondary" onClick={() => setEditing(false)} disabled={busy}>
+              Cancel
+            </button>
+            <button className="btn-primary" onClick={save} disabled={busy}>
+              {busy ? "Saving…" : "Save & verify"}
+            </button>
+          </>
+        ) : (
+          <>
+            <button className="btn-danger" onClick={remove} disabled={busy}>
+              Delete
+            </button>
+            {!verified && (
+              <button className="btn-secondary" onClick={verify} disabled={busy}>
+                Verify
+              </button>
+            )}
+            <button className="btn-secondary" onClick={() => setEditing(true)}>
+              Edit
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
