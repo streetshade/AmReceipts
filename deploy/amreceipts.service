@@ -1,0 +1,38 @@
+# systemd unit for AmReceipts on Debian.
+# Install:
+#   sudo cp deploy/amreceipts.service /etc/systemd/system/amreceipts.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now amreceipts
+# Logs:  journalctl -u amreceipts -f
+
+[Unit]
+Description=AmReceipts expense capture (Next.js)
+After=network.target
+# If using local PostgreSQL, uncomment:
+# After=network.target postgresql.service
+# Wants=postgresql.service
+
+[Service]
+Type=simple
+User=amreceipts
+Group=amreceipts
+WorkingDirectory=/opt/amreceipts
+# Loads DATABASE_URL, AUTH_SECRET, OCR_PROVIDER, etc.
+EnvironmentFile=/etc/amreceipts/amreceipts.env
+Environment=NODE_ENV=production
+Environment=PORT=3000
+# Bind to localhost only; nginx terminates TLS and proxies to it.
+ExecStart=/usr/bin/npm run start -- --hostname 127.0.0.1 --port 3000
+Restart=on-failure
+RestartSec=5
+
+# --- Hardening ---
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+# Receipt images are written under public/uploads; allow just that tree to be writable.
+ReadWritePaths=/opt/amreceipts/public/uploads
+
+[Install]
+WantedBy=multi-user.target

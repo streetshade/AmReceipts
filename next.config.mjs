@@ -1,9 +1,10 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  // tesseract.js pulls in node-only deps that Next tries to bundle for the server.
+  // These packages are node-only (native / heavy deps) and must not be bundled
+  // by Next for the server runtime — they're require()'d at runtime instead.
   experimental: {
-    serverComponentsExternalPackages: ["tesseract.js"],
+    serverComponentsExternalPackages: ["tesseract.js", "@google-cloud/vision"],
   },
 };
 

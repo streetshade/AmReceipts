@@ -27,9 +27,15 @@ for reporting.
 
 - **Next.js 14** (App Router) + TypeScript + Tailwind CSS
 - **Prisma** ORM (SQLite by default; swap to Postgres for production)
-- **Pluggable providers** so it runs with **zero API keys**:
-  - OCR: `stub` (deterministic, offline) or `tesseract` (real on-device OCR)
+- **Pluggable providers** so it runs with **zero API keys** in dev, and swaps to
+  production services with an env var:
+  - OCR: `stub` (deterministic, offline), `tesseract` (real on-device OCR), or
+    `google-vision` (Google Cloud Vision — best receipt accuracy)
   - Barcode: `local` (seeded DB) or `upcitemdb` (online lookup, caches into the local DB)
+
+The seeded barcode catalogue is weighted toward **Home Depot and other hardware /
+building-supply vendors** (power tools, hand tools, fasteners, paint, electrical,
+plumbing, adhesives, building materials, safety, lighting, garden, storage).
 
 ## Getting started
 
@@ -51,13 +57,29 @@ new account.
 In `.env`:
 
 ```env
-OCR_PROVIDER="tesseract"      # real on-device OCR instead of the stub
-BARCODE_PROVIDER="upcitemdb"  # online barcode lookup, falling back to the seeded DB
+# On-device OCR (no external service):
+OCR_PROVIDER="tesseract"
+
+# Google Cloud Vision OCR (recommended for production accuracy):
+OCR_PROVIDER="google-vision"
+GOOGLE_APPLICATION_CREDENTIALS="/etc/amreceipts/gcp-vision.json"  # service-account key
+
+# Online barcode lookup, falling back to (and caching into) the seeded DB:
+BARCODE_PROVIDER="upcitemdb"
 ```
 
-Providers are defined in `src/lib/providers/`. Add a Google Vision / AWS Textract OCR
-backend or a different barcode source by implementing the `OcrProvider` / `BarcodeProvider`
-interface and wiring it into the respective factory.
+Providers are defined in `src/lib/providers/`. To add another backend (AWS Textract,
+a different barcode source, …) implement the `OcrProvider` / `BarcodeProvider`
+interface and wire it into the respective factory.
+
+## Deploying on Debian
+
+A full walkthrough (nginx + TLS, systemd, PostgreSQL, Google Vision) is in
+[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md), with ready-to-use config under `deploy/`:
+
+- `deploy/amreceipts.service` — systemd unit
+- `deploy/nginx-amreceipts.conf` — reverse proxy (TLS, upload size, static caching)
+- `deploy/amreceipts.env.example` — production environment file
 
 ## Project layout
 

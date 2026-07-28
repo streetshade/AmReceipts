@@ -227,11 +227,45 @@ class TesseractOcrProvider implements OcrProvider {
   }
 }
 
+// --- Google Cloud Vision provider: real cloud OCR -----------------------------
+
+// The Vision client is expensive to construct and safe to reuse across requests.
+let visionClient: import("@google-cloud/vision").ImageAnnotatorClient | null = null;
+
+async function getVisionClient() {
+  if (visionClient) return visionClient;
+  const vision = await import("@google-cloud/vision");
+  // Auth resolution order:
+  //   1. GOOGLE_VISION_KEY_FILE  -> explicit service-account JSON path
+  //   2. GOOGLE_APPLICATION_CREDENTIALS -> picked up automatically by the SDK
+  //   3. GCE/GKE metadata / gcloud ADC
+  const keyFilename = process.env.GOOGLE_VISION_KEY_FILE || undefined;
+  visionClient = new vision.ImageAnnotatorClient(keyFilename ? { keyFilename } : {});
+  return visionClient;
+}
+
+class GoogleVisionOcrProvider implements OcrProvider {
+  readonly name = "google-vision";
+
+  async process(image: Buffer): Promise<ParsedReceipt> {
+    const client = await getVisionClient();
+    // DOCUMENT_TEXT_DETECTION handles dense, structured text (receipts) best.
+    const [result] = await client.documentTextDetection({ image: { content: image } });
+    if (result.error?.message) throw new Error(`Vision API: ${result.error.message}`);
+    const text = result.fullTextAnnotation?.text || result.textAnnotations?.[0]?.description || "";
+    return parseReceiptText(text);
+  }
+}
+
 export function getOcrProvider(): OcrProvider {
   const which = (process.env.OCR_PROVIDER || "stub").toLowerCase();
   switch (which) {
     case "tesseract":
       return new TesseractOcrProvider();
+    case "google":
+    case "google-vision":
+    case "googlevision":
+      return new GoogleVisionOcrProvider();
     case "stub":
     default:
       return new StubOcrProvider();
