@@ -127,7 +127,11 @@ interface and wire it into the respective factory.
 
 ## Deploying on Debian
 
-A full walkthrough (nginx + TLS, systemd, PostgreSQL, Google Vision) is in
+- **AWS EC2 (clean Debian), start to finish** — [`docs/AWS-DEPLOYMENT.md`](docs/AWS-DEPLOYMENT.md),
+  including EC2 instance-size recommendations, PostgreSQL, TLS, backups and cost.
+- **Generic Debian server** — the walkthrough below.
+
+A full generic walkthrough (nginx + TLS, systemd, PostgreSQL, Google Vision) is in
 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md), with ready-to-use config under `deploy/`:
 
 - `deploy/amreceipts.service` — systemd unit
