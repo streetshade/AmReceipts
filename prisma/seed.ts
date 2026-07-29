@@ -288,6 +288,20 @@ async function main() {
     },
   });
 
+  // Example reason catalog: some global, some scoped to the Field Team group.
+  const REASONS: Array<{ label: string; groupId: string | null }> = [
+    { label: "Client site visit", groupId: null },
+    { label: "Conference / training", groupId: null },
+    { label: "Office supplies", groupId: null },
+    { label: "Emergency callout", groupId: group.id },
+    { label: "Scheduled maintenance", groupId: group.id },
+    { label: "Warehouse restock", groupId: group.id },
+  ];
+  for (const r of REASONS) {
+    const existing = await prisma.reason.findFirst({ where: { label: r.label, groupId: r.groupId } });
+    if (!existing) await prisma.reason.create({ data: r });
+  }
+
   for (const p of PRODUCTS) {
     await prisma.product.upsert({
       where: { barcode: p.barcode },

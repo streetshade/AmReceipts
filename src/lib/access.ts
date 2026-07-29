@@ -35,3 +35,38 @@ export async function canOversee(actor: { id: string; role: string }, ownerId: s
   if (actor.role !== "approver") return false;
   return (await overseenUserIds(actor.id)).includes(ownerId);
 }
+
+/** Group ids whose reason catalog a user may manage (admin: all; approver: overseen). */
+export async function manageableGroupIds(user: { id: string; role: string }): Promise<string[]> {
+  if (user.role === "admin") {
+    const groups = await prisma.group.findMany({ select: { id: true } });
+    return groups.map((g) => g.id);
+  }
+  if (user.role === "approver") {
+    const groups = await prisma.group.findMany({ where: { approverId: user.id }, select: { id: true } });
+    return groups.map((g) => g.id);
+  }
+  return [];
+}
+
+/**
+ * Whether a user may create/edit a reason with the given group scope.
+ * - global reasons (groupId null): admin only
+ * - group reasons: admin, or the approver who oversees that group
+ */
+export async function canManageReason(user: { id: string; role: string }, groupId: string | null): Promise<boolean> {
+  if (user.role === "admin") return true;
+  if (groupId == null) return false;
+  return (await manageableGroupIds(user)).includes(groupId);
+}
+
+/** Active reasons a user may attach to a session: global + their own group's. */
+export async function availableReasons(user: { id: string; groupId: string | null }) {
+  return prisma.reason.findMany({
+    where: {
+      active: true,
+      OR: [{ groupId: null }, ...(user.groupId ? [{ groupId: user.groupId }] : [])],
+    },
+    orderBy: [{ label: "asc" }],
+  });
+}

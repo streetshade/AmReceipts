@@ -12,6 +12,7 @@ export interface ReportData {
   sessionCount: number;
   byJob: ReportRow[];
   byReason: ReportRow[];
+  byReasonCatalog: ReportRow[];
   byTitle: ReportRow[];
   byPerson: ReportRow[];
   byPaymentMethod: ReportRow[];
@@ -29,6 +30,7 @@ export async function buildReport(userIds: string[]): Promise<ReportData> {
       sessionCount: 0,
       byJob: [],
       byReason: [],
+      byReasonCatalog: [],
       byTitle: [],
       byPerson: [],
       byPaymentMethod: [],
@@ -40,6 +42,7 @@ export async function buildReport(userIds: string[]): Promise<ReportData> {
     where: { userId: { in: userIds } },
     include: {
       job: true,
+      reason: { select: { id: true, label: true } },
       user: { select: { id: true, name: true, title: true } },
       receipts: { select: { total: true, paymentMethod: { select: { label: true } } } },
     },
@@ -47,6 +50,7 @@ export async function buildReport(userIds: string[]): Promise<ReportData> {
 
   const byJob = new Map<string, ReportRow>();
   const byReason = new Map<string, ReportRow>();
+  const byReasonCatalog = new Map<string, ReportRow>();
   const byTitle = new Map<string, ReportRow>();
   const byPerson = new Map<string, ReportRow>();
   const byPayment = new Map<string, ReportRow>();
@@ -76,6 +80,9 @@ export async function buildReport(userIds: string[]): Promise<ReportData> {
       unassignedTotal += sessionTotal;
     }
 
+    // By managed reason (catalog), where one is attached.
+    if (s.reason) bump(byReasonCatalog, s.reason.id, s.reason.label, sessionTotal, true);
+
     // By job title of the session's owner.
     const title = s.user.title?.trim() || "No title";
     bump(byTitle, title, title, sessionTotal, true);
@@ -98,6 +105,7 @@ export async function buildReport(userIds: string[]): Promise<ReportData> {
     sessionCount: sessions.length,
     byJob: sortRows(byJob),
     byReason: sortRows(byReason),
+    byReasonCatalog: sortRows(byReasonCatalog),
     byTitle: sortRows(byTitle),
     byPerson: sortRows(byPerson),
     byPaymentMethod: sortRows(byPayment),

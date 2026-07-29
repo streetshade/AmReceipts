@@ -47,10 +47,30 @@ model Group {
   approverId String?
   approver   User?  @relation("GroupApprover", fields: [approverId], references: [id], onDelete: SetNull)
 
-  members User[] @relation("GroupMembers")
+  members User[]  @relation("GroupMembers")
+  reasons Reason[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+// A selectable, managed "reason" a user can optionally attach to an expense
+// session. Scoped to a group (only that group's members see it) or global
+// (groupId null → available to everyone). Managed by admins (all) and by
+// approvers (for the groups they oversee).
+model Reason {
+  id      String  @id @default(cuid())
+  label   String
+  active  Boolean @default(true)
+  groupId String?
+  group   Group?  @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  sessions ExpenseSession[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([groupId, label])
 }
 
 // A configurable integration with an external business system (e.g. PSA Web).
@@ -119,6 +139,10 @@ model ExpenseSession {
   // "job" | "travel" | "meeting" | null
   reasonType String?
   reasonNote String?
+
+  // Optional managed reason from the group's reason catalog.
+  reasonId String?
+  reason   Reason? @relation(fields: [reasonId], references: [id], onDelete: SetNull)
 
   // Approval workflow: a basic user submits a session; their group's approver
   // approves or rejects it. "draft" | "submitted" | "approved" | "rejected".

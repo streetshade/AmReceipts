@@ -1,6 +1,7 @@
 import { redirect, notFound } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth";
 import { loadSession } from "@/lib/sessions";
+import { availableReasons } from "@/lib/access";
 import { toSessionDTO } from "@/lib/dto";
 import AppHeader from "@/components/AppHeader";
 import SessionClient from "./SessionClient";
@@ -14,11 +15,16 @@ export default async function SessionPage({ params }: { params: { id: string } }
   const session = await loadSession(params.id, user.id);
   if (!session) notFound();
 
+  const reasons = await availableReasons({ id: user.id, groupId: user.groupId });
+
   return (
     <>
       <AppHeader userName={user.name} role={user.role} />
       <main className="mx-auto max-w-4xl px-4 py-6">
-        <SessionClient initial={toSessionDTO(session)} />
+        <SessionClient
+          initial={toSessionDTO(session)}
+          reasons={reasons.map((r) => ({ id: r.id, label: r.label }))}
+        />
       </main>
     </>
   );

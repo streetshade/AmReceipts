@@ -11,7 +11,12 @@ import ApprovalBar from "./ApprovalBar";
 
 type Tab = "receipts" | "items";
 
-export default function SessionClient({ initial }: { initial: SessionDTO }) {
+export interface ReasonOption {
+  id: string;
+  label: string;
+}
+
+export default function SessionClient({ initial, reasons }: { initial: SessionDTO; reasons: ReasonOption[] }) {
   const router = useRouter();
   const s = initial; // server component is the source of truth; refresh() re-fetches.
   const [tab, setTab] = useState<Tab>("receipts");
@@ -42,7 +47,7 @@ export default function SessionClient({ initial }: { initial: SessionDTO }) {
       </div>
 
       {/* Assignment */}
-      <AssignmentPanel session={s} onChange={refresh} />
+      <AssignmentPanel session={s} reasons={reasons} onChange={refresh} />
 
       {/* Approval */}
       <ApprovalBar session={s} onChange={refresh} />

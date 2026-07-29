@@ -44,6 +44,8 @@ export interface SessionDTO {
   jobName: string | null;
   reasonType: string | null;
   reasonNote: string | null;
+  reasonId: string | null;
+  reasonLabel: string | null;
   approvalStatus: string;
   approvalNote: string | null;
   approvedByName: string | null;
@@ -62,6 +64,8 @@ export function toSessionDTO(s: LoadedSession): SessionDTO {
     jobName: s.job?.name ?? null,
     reasonType: s.reasonType,
     reasonNote: s.reasonNote,
+    reasonId: s.reasonId,
+    reasonLabel: s.reason?.label ?? null,
     approvalStatus: s.approvalStatus,
     approvalNote: s.approvalNote,
     approvedByName: s.approvedBy?.name ?? null,

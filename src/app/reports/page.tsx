@@ -94,10 +94,13 @@ export default async function ReportsPage() {
           <Kpis report={self} />
           <div className="grid gap-4 md:grid-cols-2">
             <ReportTable title="By project" rows={self.byJob} empty="No sessions assigned to a project yet." />
-            <ReportTable title="By title" rows={self.byTitle} empty="No expenses recorded yet." />
+            <ReportTable title="By reason" rows={self.byReasonCatalog} empty="No reasons attached yet." />
           </div>
           <div className="grid gap-4 md:grid-cols-2">
-            <ReportTable title="By travel / meeting reason" rows={self.byReason} empty="No travel or meeting sessions yet." />
+            <ReportTable title="By title" rows={self.byTitle} empty="No expenses recorded yet." />
+            <ReportTable title="By travel / meeting" rows={self.byReason} empty="No travel or meeting sessions yet." />
+          </div>
+          <div className="grid gap-4 md:grid-cols-2">
             <ReportTable title="By payment method" rows={self.byPaymentMethod} empty="No receipts recorded yet." />
           </div>
         </section>
@@ -118,11 +121,15 @@ export default async function ReportsPage() {
             <Kpis report={team} />
             <div className="grid gap-4 md:grid-cols-2">
               <ReportTable title="By person" rows={team.byPerson} empty="No team expenses yet." />
-              <ReportTable title="By title" rows={team.byTitle} empty="No team expenses yet." />
+              <ReportTable title="By reason" rows={team.byReasonCatalog} empty="No reasons attached yet." />
             </div>
             <div className="grid gap-4 md:grid-cols-2">
+              <ReportTable title="By title" rows={team.byTitle} empty="No team expenses yet." />
               <ReportTable title="By project" rows={team.byJob} empty="No project spend yet." />
-              <ReportTable title="By travel / meeting reason" rows={team.byReason} empty="No travel or meeting sessions yet." />
+            </div>
+            <div className="grid gap-4 md:grid-cols-2">
+              <ReportTable title="By travel / meeting" rows={team.byReason} empty="No travel or meeting sessions yet." />
+              <ReportTable title="By payment method" rows={team.byPaymentMethod} empty="No receipts recorded yet." />
             </div>
           </section>
         )}

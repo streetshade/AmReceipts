@@ -75,8 +75,9 @@ export async function buildReportPdf(report: ReportData, meta: PdfMeta): Promise
   const tables: Array<{ title: string; rows: ReportRow[] }> = [];
   if (meta.isTeam) tables.push({ title: "By person", rows: report.byPerson });
   tables.push({ title: "By project", rows: report.byJob });
+  tables.push({ title: "By reason", rows: report.byReasonCatalog });
   tables.push({ title: "By title", rows: report.byTitle });
-  tables.push({ title: "By travel / meeting reason", rows: report.byReason });
+  tables.push({ title: "By travel / meeting", rows: report.byReason });
   tables.push({ title: "By payment method", rows: report.byPaymentMethod });
 
   for (const t of tables) renderTable(doc, t.title, t.rows, left, width);

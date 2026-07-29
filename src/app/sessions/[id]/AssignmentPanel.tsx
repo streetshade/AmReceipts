@@ -2,9 +2,19 @@
 
 import { useState } from "react";
 import type { SessionDTO } from "@/lib/dto";
+import type { ReasonOption } from "./SessionClient";
 
-// Assign the session (and its costs) to a job number, or to a travel/meeting reason.
-export default function AssignmentPanel({ session, onChange }: { session: SessionDTO; onChange: () => void }) {
+// Assign the session (and its costs) to a job number, or a travel/meeting reason,
+// plus an optional managed reason from the group's catalog.
+export default function AssignmentPanel({
+  session,
+  reasons,
+  onChange,
+}: {
+  session: SessionDTO;
+  reasons: ReasonOption[];
+  onChange: () => void;
+}) {
   const assigned = session.status === "assigned";
   const [open, setOpen] = useState(!assigned);
   const [mode, setMode] = useState<"job" | "travel" | "meeting">(
@@ -13,6 +23,7 @@ export default function AssignmentPanel({ session, onChange }: { session: Sessio
   const [jobNumber, setJobNumber] = useState(session.jobNumber ?? "");
   const [jobName, setJobName] = useState(session.jobName ?? "");
   const [reasonNote, setReasonNote] = useState(session.reasonNote ?? "");
+  const [reasonId, setReasonId] = useState(session.reasonId ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -20,10 +31,11 @@ export default function AssignmentPanel({ session, onChange }: { session: Sessio
     e.preventDefault();
     setBusy(true);
     setError(null);
-    const body =
+    const body: Record<string, unknown> =
       mode === "job"
         ? { jobNumber: jobNumber.trim(), jobName: jobName.trim() || undefined }
         : { reasonType: mode, reasonNote: reasonNote.trim() || undefined };
+    body.reasonId = reasonId || null;
     const res = await fetch(`/api/sessions/${session.id}/assign`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -51,6 +63,11 @@ export default function AssignmentPanel({ session, onChange }: { session: Sessio
         <div>
           <div className="text-xs uppercase tracking-wide text-muted">Assigned to</div>
           <div className="font-medium capitalize">{currentLabel}</div>
+          {session.reasonLabel && (
+            <div className="mt-1">
+              <span className="badge bg-brand/15 text-brand">{session.reasonLabel}</span>
+            </div>
+          )}
         </div>
         <button className="btn-secondary" onClick={() => setOpen((o) => !o)}>
           {open ? "Cancel" : assigned ? "Change" : "Assign"}
@@ -102,6 +119,23 @@ export default function AssignmentPanel({ session, onChange }: { session: Sessio
               />
             </div>
           )}
+
+          {/* Optional managed reason from the group's catalog. */}
+          <div>
+            <label className="label">Reason (optional)</label>
+            {reasons.length === 0 ? (
+              <p className="text-sm text-muted">No reasons configured for your group yet.</p>
+            ) : (
+              <select className="input" value={reasonId} onChange={(e) => setReasonId(e.target.value)}>
+                <option value="">— none —</option>
+                {reasons.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.label}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
 
           {error && <p className="text-sm text-red-300">{error}</p>}
           <button className="btn-primary" disabled={busy}>

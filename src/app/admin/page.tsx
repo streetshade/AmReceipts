@@ -4,6 +4,7 @@ import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import AppHeader from "@/components/AppHeader";
 import AdminClient, { type AdminUser, type AdminGroup } from "./AdminClient";
+import ReasonManager, { type ManagedReason } from "@/components/ReasonManager";
 
 export const dynamic = "force-dynamic";
 
@@ -12,7 +13,7 @@ export default async function AdminPage() {
   if (!me) redirect("/login");
   if (me.role !== "admin") redirect("/dashboard");
 
-  const [users, groups] = await Promise.all([
+  const [users, groups, reasons] = await Promise.all([
     prisma.user.findMany({
       orderBy: { name: "asc" },
       select: { id: true, name: true, email: true, role: true, active: true, company: true, title: true, groupId: true },
@@ -21,7 +22,16 @@ export default async function AdminPage() {
       orderBy: { name: "asc" },
       include: { approver: { select: { id: true, name: true } }, _count: { select: { members: true } } },
     }),
+    prisma.reason.findMany({ orderBy: { label: "asc" }, include: { group: { select: { name: true } } } }),
   ]);
+
+  const managedReasons: ManagedReason[] = reasons.map((r) => ({
+    id: r.id,
+    label: r.label,
+    active: r.active,
+    groupId: r.groupId,
+    groupName: r.group?.name ?? null,
+  }));
 
   const adminUsers: AdminUser[] = users;
   const adminGroups: AdminGroup[] = groups.map((g) => ({
@@ -46,6 +56,18 @@ export default async function AdminPage() {
           </Link>
         </div>
         <AdminClient users={adminUsers} groups={adminGroups} currentUserId={me.id} />
+
+        <section className="space-y-3">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-muted">Reasons</h2>
+          <p className="text-sm text-muted">
+            Optional reasons users can attach to an expense session. Scope to a group, or make one global (all groups).
+          </p>
+          <ReasonManager
+            reasons={managedReasons}
+            groups={adminGroups.map((g) => ({ id: g.id, name: g.name }))}
+            allowGlobal
+          />
+        </section>
       </main>
     </>
   );

@@ -6,7 +6,8 @@ export interface ExportSessionRow {
   company: string;
   session: string;
   project: string;
-  reason: string;
+  reason: string; // managed catalog reason
+  travelMeeting: string; // free-form travel/meeting reason
   payment: string;
   approval: string;
   submitted: string;
@@ -22,6 +23,7 @@ export async function exportSessionRows(userIds: string[]): Promise<ExportSessio
     orderBy: [{ createdAt: "desc" }],
     include: {
       job: true,
+      reason: { select: { label: true } },
       user: { select: { name: true, title: true, company: true } },
       receipts: { select: { total: true, paymentMethod: { select: { label: true } } } },
     },
@@ -35,7 +37,9 @@ export async function exportSessionRows(userIds: string[]): Promise<ExportSessio
       company: s.user.company ?? "",
       session: s.name,
       project: s.job ? (s.job.name ? `${s.job.number} — ${s.job.name}` : s.job.number) : "",
-      reason: s.reasonType && s.reasonType !== "job" ? (s.reasonNote ? `${s.reasonType}: ${s.reasonNote}` : s.reasonType) : "",
+      reason: s.reason?.label ?? "",
+      travelMeeting:
+        s.reasonType && s.reasonType !== "job" ? (s.reasonNote ? `${s.reasonType}: ${s.reasonNote}` : s.reasonType) : "",
       payment: payments.join("; "),
       approval: s.approvalStatus,
       submitted: s.submittedAt ? s.submittedAt.toISOString().slice(0, 10) : "",

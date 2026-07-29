@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { overseenUserIds } from "@/lib/access";
 import AppHeader from "@/components/AppHeader";
 import ApprovalsClient, { type ApprovalRow } from "./ApprovalsClient";
+import ReasonManager, { type ManagedReason } from "@/components/ReasonManager";
 
 export const dynamic = "force-dynamic";
 
@@ -11,6 +12,24 @@ export default async function ApprovalsPage() {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
   if (user.role !== "approver" && user.role !== "admin") redirect("/dashboard");
+
+  // Groups this approver oversees, and their reason catalog (for management).
+  const myGroups =
+    user.role === "admin"
+      ? await prisma.group.findMany({ orderBy: { name: "asc" }, select: { id: true, name: true } })
+      : await prisma.group.findMany({ where: { approverId: user.id }, orderBy: { name: "asc" }, select: { id: true, name: true } });
+  const groupReasons = await prisma.reason.findMany({
+    where: { groupId: { in: myGroups.map((g) => g.id) } },
+    orderBy: { label: "asc" },
+    include: { group: { select: { name: true } } },
+  });
+  const managedReasons: ManagedReason[] = groupReasons.map((r) => ({
+    id: r.id,
+    label: r.label,
+    active: r.active,
+    groupId: r.groupId,
+    groupName: r.group?.name ?? null,
+  }));
 
   // Admins can act on everyone; approvers on their overseen group members.
   const ids =
@@ -44,8 +63,18 @@ export default async function ApprovalsPage() {
   return (
     <>
       <AppHeader userName={user.name} role={user.role} />
-      <main className="mx-auto max-w-4xl px-4 py-6">
+      <main className="mx-auto max-w-4xl space-y-8 px-4 py-6">
         <ApprovalsClient rows={rows} />
+
+        {myGroups.length > 0 && (
+          <section className="space-y-3">
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-muted">Reasons for your groups</h2>
+            <p className="text-sm text-muted">
+              Optional reasons the people you oversee can attach to an expense session.
+            </p>
+            <ReasonManager reasons={managedReasons} groups={myGroups} allowGlobal={false} />
+          </section>
+        )}
       </main>
     </>
   );
