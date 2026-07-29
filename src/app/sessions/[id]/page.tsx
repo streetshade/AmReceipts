@@ -16,7 +16,7 @@ export default async function SessionPage({ params }: { params: { id: string } }
 
   return (
     <>
-      <AppHeader userName={user.name} />
+      <AppHeader userName={user.name} role={user.role} />
       <main className="mx-auto max-w-4xl px-4 py-6">
         <SessionClient initial={toSessionDTO(session)} />
       </main>

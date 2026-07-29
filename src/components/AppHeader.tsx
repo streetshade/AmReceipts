@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { Logo } from "./Logo";
 
-export default function AppHeader({ userName }: { userName: string }) {
+export default function AppHeader({ userName, role = "user" }: { userName: string; role?: string }) {
   const router = useRouter();
   const pathname = usePathname();
 
@@ -17,6 +17,10 @@ export default function AppHeader({ userName }: { userName: string }) {
   const links = [
     { href: "/dashboard", label: "Sessions" },
     { href: "/reports", label: "Reports" },
+    // Approvers (and admins) get the approvals queue.
+    ...(role === "approver" || role === "admin" ? [{ href: "/approvals", label: "Approvals" }] : []),
+    // Admins get account administration.
+    ...(role === "admin" ? [{ href: "/admin", label: "Admin" }] : []),
     { href: "/account", label: "Account" },
   ];
 

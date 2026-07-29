@@ -69,11 +69,41 @@ npm run db:reset              # create schema + seed products and a demo user
 npm run dev                   # http://localhost:3000
 ```
 
-Sign in with the seeded demo account: **demo@amreceipts.app / password123**, or register a
-new account.
+Seeded accounts (all `password123`) — one per role:
+
+| Email | Role | Notes |
+|---|---|---|
+| `admin@amreceipts.app` | Administrator | manages all accounts, groups, integrations |
+| `approver@amreceipts.app` | Approver | oversees the **Field Team** group |
+| `demo@amreceipts.app` | Basic user | member of Field Team |
+
+Or register a new account (defaults to the basic-user role).
 
 > Camera access (receipt capture, live barcode scanning) requires HTTPS or `localhost`.
 > On desktop without a camera, barcode entry falls back to a manual input.
+
+## Roles, groups & approvals
+
+Three access levels, enforced in every API route (`requireRole`) and page:
+
+- **Basic user** — captures sessions, submits them for approval, sees a **self report**
+  (spend by project, by title, by reason, by payment method).
+- **Approver** — everything a user can do, plus an **Approvals** queue to approve/reject
+  sessions submitted by members of the **groups** they oversee, and a **team report**
+  (spend by person / title / project across those they oversee).
+- **Admin** — administers **all accounts** (role, group, active state, account record),
+  manages **groups** (name + assigned approver), and configures **integrations**.
+
+Each account carries a full record: name, email, **company** and **title** (self-editable
+on the Account page; also administrable by an admin). Approval flow on a session:
+`draft → submitted → approved | rejected` (a rejected session can be resubmitted).
+
+## Integrations (admin stub)
+
+Admins have a **Business system integrations** page (`/admin/integrations`) — a
+configuration placeholder. The first example, **PSA Web**, stores base URL / API key /
+company ID / sync flag and an enabled toggle. It is a stub: config is persisted, but no
+external sync is performed yet.
 
 ## Switching to real OCR / online barcode lookup
 

@@ -44,6 +44,10 @@ export interface SessionDTO {
   jobName: string | null;
   reasonType: string | null;
   reasonNote: string | null;
+  approvalStatus: string;
+  approvalNote: string | null;
+  approvedByName: string | null;
+  submittedAt: string | null;
   receipts: ReceiptDTO[];
   scannedItems: ScannedItemDTO[];
   receiptTotal: number;
@@ -58,6 +62,10 @@ export function toSessionDTO(s: LoadedSession): SessionDTO {
     jobName: s.job?.name ?? null,
     reasonType: s.reasonType,
     reasonNote: s.reasonNote,
+    approvalStatus: s.approvalStatus,
+    approvalNote: s.approvalNote,
+    approvedByName: s.approvedBy?.name ?? null,
+    submittedAt: s.submittedAt ? s.submittedAt.toISOString() : null,
     receiptTotal: s.receipts.reduce((acc, r) => acc + (r.total ?? 0), 0),
     receipts: s.receipts.map((r) => ({
       id: r.id,

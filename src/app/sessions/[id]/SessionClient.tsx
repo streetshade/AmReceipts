@@ -7,6 +7,7 @@ import { formatCents } from "@/lib/money";
 import ReceiptPanel from "./ReceiptPanel";
 import BarcodePanel from "./BarcodePanel";
 import AssignmentPanel from "./AssignmentPanel";
+import ApprovalBar from "./ApprovalBar";
 
 type Tab = "receipts" | "items";
 
@@ -42,6 +43,9 @@ export default function SessionClient({ initial }: { initial: SessionDTO }) {
 
       {/* Assignment */}
       <AssignmentPanel session={s} onChange={refresh} />
+
+      {/* Approval */}
+      <ApprovalBar session={s} onChange={refresh} />
 
       {/* Tabs */}
       <div className="flex gap-2 border-b border-line">

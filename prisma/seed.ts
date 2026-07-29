@@ -220,15 +220,53 @@ async function main() {
     seen.add(p.barcode);
   }
 
-  // Demo account so the app is usable immediately.
+  // Demo accounts covering all three roles so each login can be tried.
   const passwordHash = await bcrypt.hash("password123", 10);
+
+  const admin = await prisma.user.upsert({
+    where: { email: "admin@amreceipts.app" },
+    update: { role: "admin", company: "Samaritech", title: "Administrator" },
+    create: {
+      email: "admin@amreceipts.app",
+      name: "Ada Admin",
+      passwordHash,
+      role: "admin",
+      company: "Samaritech",
+      title: "Administrator",
+    },
+  });
+
+  const approver = await prisma.user.upsert({
+    where: { email: "approver@amreceipts.app" },
+    update: { role: "approver", company: "Samaritech", title: "Field Supervisor" },
+    create: {
+      email: "approver@amreceipts.app",
+      name: "Aaron Approver",
+      passwordHash,
+      role: "approver",
+      company: "Samaritech",
+      title: "Field Supervisor",
+    },
+  });
+
+  // The Field Team group is overseen by the approver.
+  const group = await prisma.group.upsert({
+    where: { name: "Field Team" },
+    update: { approverId: approver.id },
+    create: { name: "Field Team", approverId: approver.id },
+  });
+
   const user = await prisma.user.upsert({
     where: { email: "demo@amreceipts.app" },
-    update: {},
+    update: { role: "user", company: "Samaritech", title: "Field Technician", groupId: group.id },
     create: {
       email: "demo@amreceipts.app",
       name: "Demo User",
       passwordHash,
+      role: "user",
+      company: "Samaritech",
+      title: "Field Technician",
+      groupId: group.id,
     },
   });
 
@@ -236,6 +274,18 @@ async function main() {
     where: { userId_number: { userId: user.id, number: "JOB-1001" } },
     update: {},
     create: { userId: user.id, number: "JOB-1001", name: "Downtown site fit-out" },
+  });
+
+  // Admin-managed integration placeholder (PSA Web) — config stub only.
+  await prisma.integration.upsert({
+    where: { key: "psa_web" },
+    update: {},
+    create: {
+      key: "psa_web",
+      name: "PSA Web",
+      enabled: false,
+      config: JSON.stringify({ baseUrl: "", apiKey: "", companyId: "", syncExpenses: false }),
+    },
   });
 
   for (const p of PRODUCTS) {
@@ -252,7 +302,10 @@ async function main() {
   }, {});
   console.log(`Seeded ${PRODUCTS.length} products across ${Object.keys(byCategory).length} categories:`);
   for (const [cat, n] of Object.entries(byCategory).sort()) console.log(`  ${cat}: ${n}`);
-  console.log("Demo user: demo@amreceipts.app / password123");
+  console.log("Accounts (all password123):");
+  console.log("  admin@amreceipts.app    (admin)");
+  console.log("  approver@amreceipts.app (approver, oversees Field Team)");
+  console.log("  demo@amreceipts.app     (user, member of Field Team)");
 }
 
 main()

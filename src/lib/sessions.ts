@@ -6,6 +6,7 @@ export async function loadSession(sessionId: string, userId: string) {
     where: { id: sessionId, userId },
     include: {
       job: true,
+      approvedBy: { select: { name: true } },
       receipts: {
         orderBy: { createdAt: "asc" },
         include: {

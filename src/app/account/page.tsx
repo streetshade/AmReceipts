@@ -3,6 +3,7 @@ import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { formatCents } from "@/lib/money";
 import AppHeader from "@/components/AppHeader";
+import ProfileCard from "@/components/ProfileCard";
 
 export const dynamic = "force-dynamic";
 
@@ -10,7 +11,7 @@ export default async function AccountPage() {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
 
-  const [paymentMethods, jobs] = await Promise.all([
+  const [paymentMethods, jobs, group] = await Promise.all([
     prisma.paymentMethod.findMany({
       where: { userId: user.id },
       orderBy: { createdAt: "asc" },
@@ -21,18 +22,23 @@ export default async function AccountPage() {
       orderBy: { createdAt: "desc" },
       include: { sessions: { include: { receipts: { select: { total: true } } } } },
     }),
+    user.groupId ? prisma.group.findUnique({ where: { id: user.groupId } }) : Promise.resolve(null),
   ]);
 
   return (
     <>
-      <AppHeader userName={user.name} />
+      <AppHeader userName={user.name} role={user.role} />
       <main className="mx-auto max-w-4xl space-y-6 px-4 py-6">
-        <div>
-          <h1 className="text-xl font-semibold">Account</h1>
-          <p className="text-sm text-muted">
-            {user.name} · {user.email}
-          </p>
-        </div>
+        <h1 className="text-xl font-semibold">Account</h1>
+
+        <ProfileCard
+          name={user.name}
+          email={user.email}
+          role={user.role}
+          company={user.company}
+          title={user.title}
+          groupName={group?.name ?? null}
+        />
 
         <section className="card overflow-hidden">
           <div className="border-b border-line px-4 py-3 font-semibold">Payment methods</div>

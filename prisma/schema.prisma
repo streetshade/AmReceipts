@@ -16,9 +16,52 @@ model User {
   name         String
   passwordHash String
 
-  sessions       ExpenseSession[]
-  paymentMethods PaymentMethod[]
-  jobs           Job[]
+  // Access level: "user" (basic), "approver", or "admin".
+  role    String  @default("user")
+  active  Boolean @default(true)
+
+  // Full account record.
+  company String?
+  title   String?
+
+  // Group membership (basic users belong to a group overseen by an approver).
+  groupId String?
+  group   Group?  @relation("GroupMembers", fields: [groupId], references: [id], onDelete: SetNull)
+  // Groups this user (an approver) oversees.
+  approverGroups Group[] @relation("GroupApprover")
+
+  sessions        ExpenseSession[]
+  paymentMethods  PaymentMethod[]
+  jobs            Job[]
+  approvedSessions ExpenseSession[] @relation("SessionApprover")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// A group of basic users overseen by one approver. Approvers can oversee many
+// groups; a user belongs to at most one group.
+model Group {
+  id         String @id @default(cuid())
+  name       String @unique
+  approverId String?
+  approver   User?  @relation("GroupApprover", fields: [approverId], references: [id], onDelete: SetNull)
+
+  members User[] @relation("GroupMembers")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// A configurable integration with an external business system (e.g. PSA Web).
+// This is an admin-managed stub: config is stored, but no integration logic yet.
+model Integration {
+  id        String  @id @default(cuid())
+  key       String  @unique // stable slug, e.g. "psa_web"
+  name      String
+  enabled   Boolean @default(false)
+  // JSON-encoded config (endpoint, credentials placeholders, etc.).
+  config    String  @default("{}")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -76,6 +119,15 @@ model ExpenseSession {
   // "job" | "travel" | "meeting" | null
   reasonType String?
   reasonNote String?
+
+  // Approval workflow: a basic user submits a session; their group's approver
+  // approves or rejects it. "draft" | "submitted" | "approved" | "rejected".
+  approvalStatus String    @default("draft")
+  submittedAt    DateTime?
+  approvedAt     DateTime?
+  approvalNote   String?
+  approvedById   String?
+  approvedBy     User?     @relation("SessionApprover", fields: [approvedById], references: [id], onDelete: SetNull)
 
   receipts     Receipt[]
   scannedItems ScannedItem[]

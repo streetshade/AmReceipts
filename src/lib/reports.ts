@@ -12,29 +12,51 @@ export interface ReportData {
   sessionCount: number;
   byJob: ReportRow[];
   byReason: ReportRow[];
+  byTitle: ReportRow[];
+  byPerson: ReportRow[];
   byPaymentMethod: ReportRow[];
   unassignedTotal: number;
 }
 
-/** Build the expenditure report across all of a user's sessions. */
-export async function buildReport(userId: string): Promise<ReportData> {
+/**
+ * Build an expenditure report across the given set of users' sessions.
+ * Pass [userId] for a self report, or many ids for an approver/admin team report.
+ */
+export async function buildReport(userIds: string[]): Promise<ReportData> {
+  if (userIds.length === 0) {
+    return {
+      grandTotal: 0,
+      sessionCount: 0,
+      byJob: [],
+      byReason: [],
+      byTitle: [],
+      byPerson: [],
+      byPaymentMethod: [],
+      unassignedTotal: 0,
+    };
+  }
+
   const sessions = await prisma.expenseSession.findMany({
-    where: { userId },
+    where: { userId: { in: userIds } },
     include: {
       job: true,
+      user: { select: { id: true, name: true, title: true } },
       receipts: { select: { total: true, paymentMethod: { select: { label: true } } } },
     },
   });
 
   const byJob = new Map<string, ReportRow>();
   const byReason = new Map<string, ReportRow>();
+  const byTitle = new Map<string, ReportRow>();
+  const byPerson = new Map<string, ReportRow>();
   const byPayment = new Map<string, ReportRow>();
   let grandTotal = 0;
   let unassignedTotal = 0;
 
-  const bump = (map: Map<string, ReportRow>, key: string, label: string, amount: number) => {
+  const bump = (map: Map<string, ReportRow>, key: string, label: string, amount: number, countSession: boolean) => {
     const row = map.get(key) ?? { key, label, sessionCount: 0, receiptTotal: 0 };
     row.receiptTotal += amount;
+    if (countSession) row.sessionCount += 1;
     map.set(key, row);
   };
 
@@ -42,23 +64,29 @@ export async function buildReport(userId: string): Promise<ReportData> {
     const sessionTotal = s.receipts.reduce((acc, r) => acc + (r.total ?? 0), 0);
     grandTotal += sessionTotal;
 
+    // By project (job) or travel/meeting reason.
     if (s.job) {
-      const key = s.job.id;
       const label = s.job.name ? `${s.job.number} — ${s.job.name}` : s.job.number;
-      bump(byJob, key, label, sessionTotal);
-      byJob.get(key)!.sessionCount += 1;
+      bump(byJob, s.job.id, label, sessionTotal, true);
     } else if (s.reasonType && s.reasonType !== "job") {
+      const key = `${s.reasonType}:${s.reasonNote ?? ""}`;
       const label = s.reasonNote ? `${s.reasonType}: ${s.reasonNote}` : s.reasonType;
-      bump(byReason, `${s.reasonType}:${s.reasonNote ?? ""}`, label, sessionTotal);
-      byReason.get(`${s.reasonType}:${s.reasonNote ?? ""}`)!.sessionCount += 1;
+      bump(byReason, key, label, sessionTotal, true);
     } else {
       unassignedTotal += sessionTotal;
     }
 
-    // Payment method breakdown is per-receipt.
+    // By job title of the session's owner.
+    const title = s.user.title?.trim() || "No title";
+    bump(byTitle, title, title, sessionTotal, true);
+
+    // By person (useful for team reports).
+    bump(byPerson, s.user.id, s.user.name, sessionTotal, true);
+
+    // By payment method (per receipt).
     for (const r of s.receipts) {
       const label = r.paymentMethod?.label ?? "Unspecified";
-      bump(byPayment, label, label, r.total ?? 0);
+      bump(byPayment, label, label, r.total ?? 0, false);
     }
   }
 
@@ -70,6 +98,8 @@ export async function buildReport(userId: string): Promise<ReportData> {
     sessionCount: sessions.length,
     byJob: sortRows(byJob),
     byReason: sortRows(byReason),
+    byTitle: sortRows(byTitle),
+    byPerson: sortRows(byPerson),
     byPaymentMethod: sortRows(byPayment),
     unassignedTotal,
   };
