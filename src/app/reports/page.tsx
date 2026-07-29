@@ -29,6 +29,19 @@ function ReportTable({ title, rows, empty }: { title: string; rows: ReportRow[];
   );
 }
 
+function ExportLinks({ scope }: { scope: "self" | "team" }) {
+  return (
+    <div className="flex gap-2">
+      <a className="btn-secondary" href={`/api/reports/export?scope=${scope}&format=csv`}>
+        Export CSV
+      </a>
+      <a className="btn-secondary" href={`/api/reports/export?scope=${scope}&format=pdf`}>
+        Export PDF
+      </a>
+    </div>
+  );
+}
+
 function Kpis({ report }: { report: ReportData }) {
   return (
     <div className="grid gap-4 sm:grid-cols-3">
@@ -69,11 +82,14 @@ export default async function ReportsPage() {
       <AppHeader userName={user.name} role={user.role} />
       <main className="mx-auto max-w-4xl space-y-8 px-4 py-6">
         <section className="space-y-4">
-          <div>
-            <h1 className="text-xl font-semibold">Your expenses</h1>
-            <p className="text-sm text-muted">
-              {user.title ? `${user.title}${user.company ? `, ${user.company}` : ""}` : "Personal report"}
-            </p>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h1 className="text-xl font-semibold">Your expenses</h1>
+              <p className="text-sm text-muted">
+                {user.title ? `${user.title}${user.company ? `, ${user.company}` : ""}` : "Personal report"}
+              </p>
+            </div>
+            <ExportLinks scope="self" />
           </div>
           <Kpis report={self} />
           <div className="grid gap-4 md:grid-cols-2">
@@ -88,13 +104,16 @@ export default async function ReportsPage() {
 
         {team && (
           <section className="space-y-4">
-            <div>
-              <h2 className="text-xl font-semibold">Team expenses</h2>
-              <p className="text-sm text-muted">
-                {user.role === "admin"
-                  ? "All accounts"
-                  : `${overseenCount} team member${overseenCount === 1 ? "" : "s"} you oversee (plus yourself)`}
-              </p>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="text-xl font-semibold">Team expenses</h2>
+                <p className="text-sm text-muted">
+                  {user.role === "admin"
+                    ? "All accounts"
+                    : `${overseenCount} team member${overseenCount === 1 ? "" : "s"} you oversee (plus yourself)`}
+                </p>
+              </div>
+              <ExportLinks scope="team" />
             </div>
             <Kpis report={team} />
             <div className="grid gap-4 md:grid-cols-2">
