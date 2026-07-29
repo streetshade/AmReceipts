@@ -82,9 +82,20 @@ variable "git_token" {
 }
 
 variable "ocr_provider" {
-  description = "OCR backend: stub | tesseract | google-vision."
+  description = "OCR backend: google-vision | tesseract | stub."
   type        = string
-  default     = "stub"
+  default     = "google-vision"
+}
+
+variable "gcp_vision_key_file" {
+  description = <<-EOT
+    Path to a Google Cloud Vision service-account JSON key on the machine running
+    Terraform. When set (and ocr_provider = "google-vision"), its contents are
+    delivered to the instance at launch so real OCR works immediately. Leave empty
+    to add the key manually after boot.
+  EOT
+  type        = string
+  default     = ""
 }
 
 variable "barcode_provider" {

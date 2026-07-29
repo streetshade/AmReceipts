@@ -46,8 +46,17 @@ Parameters:
     Default: claude/samaritech-amreceipts
   OcrProvider:
     Type: String
-    Default: stub
-    AllowedValues: [stub, tesseract, google-vision]
+    Default: google-vision
+    AllowedValues: [google-vision, tesseract, stub]
+  VisionKeyB64:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: >
+      Base64 of a Google Cloud Vision service-account JSON key (for real OCR on
+      first boot). Produce with: base64 -w0 service-account.json. Leave empty to
+      add the key manually after boot. (CloudFormation parameter values are
+      limited to ~4 KB; a typical key fits. For larger/secure delivery, use SSM.)
   BarcodeProvider:
     Type: String
     Default: upcitemdb
@@ -93,6 +102,7 @@ Resources:
           export REPO_BRANCH="${RepoBranch}"
           export OCR_PROVIDER="${OcrProvider}"
           export BARCODE_PROVIDER="${BarcodeProvider}"
+          export GCP_VISION_KEY_B64="${VisionKeyB64}"
           curl -fsSL "https://raw.githubusercontent.com/streetshade/AmReceipts/${RepoBranch}/deploy/cloud-init.sh" -o /root/amreceipts-cloud-init.sh
           bash /root/amreceipts-cloud-init.sh
 

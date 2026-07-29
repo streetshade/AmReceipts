@@ -25,8 +25,13 @@ echo "=== AmReceipts provisioning started: $(date -u) ==="
 : "${REPO_URL:=https://github.com/streetshade/AmReceipts.git}"
 : "${REPO_BRANCH:=claude/samaritech-amreceipts}"
 : "${GIT_TOKEN:=}"                    # set only if the repo is PRIVATE (a PAT with read access)
-: "${OCR_PROVIDER:=stub}"            # stub | tesseract | google-vision
+: "${OCR_PROVIDER:=google-vision}"    # google-vision | tesseract | stub
 : "${BARCODE_PROVIDER:=upcitemdb}"    # upcitemdb | local
+# Base64 of a Google Cloud Vision service-account JSON key. When set (and
+# OCR_PROVIDER=google-vision), it is written to the key path below at launch so
+# the instance does real OCR immediately. Produce it with:
+#   base64 -w0 service-account.json      (Linux)   /   base64 service-account.json  (macOS)
+: "${GCP_VISION_KEY_B64:=}"
 # =====================================================================================
 
 APP_DIR=/opt/amreceipts
@@ -105,6 +110,12 @@ NODE_ENV="production"
 PORT="3000"
 ENV
 chmod 600 "$ENV_FILE"
+
+# Install the Google Vision service-account key, if one was supplied at launch.
+if [ -n "$GCP_VISION_KEY_B64" ]; then
+  echo "$GCP_VISION_KEY_B64" | base64 -d > "$ENV_DIR/gcp-vision.json"
+  chmod 600 "$ENV_DIR/gcp-vision.json"
+fi
 chown -R amreceipts:amreceipts "$ENV_DIR"
 
 # --- 6. Build, migrate, seed ---------------------------------------------------------
@@ -188,6 +199,18 @@ echo "0 2 * * * postgres pg_dump amreceipts | gzip > /var/backups/amreceipts/db-
   > /etc/cron.d/amreceipts-db-backup
 
 # --- Summary -------------------------------------------------------------------------
+ocr_note="OCR provider:   ${OCR_PROVIDER}"
+if [ "$OCR_PROVIDER" = google-vision ]; then
+  if [ -f "$ENV_DIR/gcp-vision.json" ]; then
+    ocr_note="${ocr_note}  (Vision key installed — real OCR active)"
+  else
+    ocr_note="${ocr_note}
+  !! NO Vision key present — receipts will fail OCR until you add one:
+     upload the service-account JSON to ${ENV_DIR}/gcp-vision.json (chmod 600,
+     owned by amreceipts), then: sudo systemctl restart amreceipts"
+  fi
+fi
+
 cat > /root/amreceipts-provision-summary.txt <<SUMMARY
 AmReceipts provisioning complete: $(date -u)
 
@@ -199,7 +222,7 @@ Seeded demo accounts (all password123) — CHANGE THESE:
   approver@amreceipts.app  (approver)
   demo@amreceipts.app      (user)
 
-OCR provider:   ${OCR_PROVIDER}$([ "$OCR_PROVIDER" = google-vision ] && echo '  (upload the service-account key to '"$ENV_DIR"'/gcp-vision.json and: systemctl restart amreceipts)')
+${ocr_note}
 Env file:       ${ENV_FILE}
 App logs:       journalctl -u amreceipts -f
 DB backups:     /var/backups/amreceipts

@@ -86,6 +86,7 @@ locals {
     export GIT_TOKEN=${jsonencode(var.git_token)}
     export OCR_PROVIDER=${jsonencode(var.ocr_provider)}
     export BARCODE_PROVIDER=${jsonencode(var.barcode_provider)}
+    export GCP_VISION_KEY_B64=${jsonencode(var.gcp_vision_key_file != "" ? base64encode(file(var.gcp_vision_key_file)) : "")}
     ${file("${path.module}/../cloud-init.sh")}
   EOT
 }

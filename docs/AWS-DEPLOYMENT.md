@@ -229,19 +229,30 @@ uploads. Visit `https://YOUR.DOMAIN` and sign in.
 
 ## 11. OCR provider setup (Google Cloud Vision)
 
-If `OCR_PROVIDER=google-vision`:
+**Google Vision is the default** OCR backend for the automated tooling
+(`cloud-init.sh`, Terraform, CloudFormation). To make a fresh instance do real OCR
+the moment it boots:
 
 1. In Google Cloud Console: create/select a project, **enable the Cloud Vision API**,
    and ensure **billing** is on (Vision has a free monthly tier, then per-1,000-image
    pricing).
-2. Create a **service account** with role **Cloud Vision API User**, create a **JSON
-   key**, and copy it to the server:
+2. Create a **service account** with role **Cloud Vision API User** and download a
+   **JSON key**.
+3. Deliver the key **at launch** so no manual step is needed:
+   - **Terraform:** set `gcp_vision_key_file = "./gcp-vision.json"`.
+   - **CloudFormation:** pass `VisionKeyB64` = `base64 -w0 gcp-vision.json`.
+   - **Raw cloud-init:** set `GCP_VISION_KEY_B64` (base64 of the JSON) in the CONFIG
+     block. cloud-init writes it to `/etc/amreceipts/gcp-vision.json` on boot.
+
+   Or add it **after boot** (also works if you left the key empty at launch):
    ```bash
    sudo install -Dm600 gcp-vision.json /etc/amreceipts/gcp-vision.json
    sudo chown amreceipts:amreceipts /etc/amreceipts/gcp-vision.json
    sudo systemctl restart amreceipts
    ```
-3. `GOOGLE_APPLICATION_CREDENTIALS` in the env file must point at that path.
+   The env's `GOOGLE_APPLICATION_CREDENTIALS` already points at that path. If Vision
+   is selected but no key is present, receipts still upload but OCR fails gracefully
+   (enter details manually) until the key is added.
 
 **Alternatives:** `OCR_PROVIDER=tesseract` runs OCR on-box (no external service, but
 CPU-heavy — size accordingly, §1). `OCR_PROVIDER=stub` is deterministic/offline for
