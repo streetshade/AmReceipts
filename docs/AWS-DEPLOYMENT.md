@@ -8,6 +8,18 @@ EC2 instance: PostgreSQL + the app + nginx/TLS, all on one box. Copy-paste frien
 > setup for a team of tens of users. Split PostgreSQL onto RDS and put images on
 > S3 only when you outgrow it (see [Scaling later](#12-scaling-later)).
 
+> **Prefer automation?** Skip the manual steps entirely:
+> - **Terraform** — [`deploy/terraform/`](../deploy/terraform/) creates the security
+>   group, Elastic IP and instance, which self-provisions on first boot.
+> - **CloudFormation** — [`deploy/cloudformation.yaml`](../deploy/cloudformation.yaml).
+> - **cloud-init only** — paste [`deploy/cloud-init.sh`](../deploy/cloud-init.sh) into
+>   the EC2 *User data* field when launching any Debian 12 instance.
+>
+> All three run the same [`deploy/cloud-init.sh`](../deploy/cloud-init.sh), which
+> generates all secrets on the instance, installs the full stack, and (given a domain
+> + email with DNS already pointing at the host) obtains a TLS cert. The rest of this
+> document is the **manual** walkthrough and the reference for what that script does.
+
 ---
 
 ## 1. Choosing the EC2 instance

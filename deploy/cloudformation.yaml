@@ -1,0 +1,114 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  AmReceipts on a single Debian 12 EC2 instance. Creates a security group,
+  Elastic IP and instance that self-provisions on first boot by fetching and
+  running deploy/cloud-init.sh from the repo (Node 20 + PostgreSQL + nginx/TLS).
+  Assumes a PUBLIC repo (the user-data curls the raw script). For a private repo,
+  use the Terraform module in deploy/terraform/ (it can pass a token).
+
+Parameters:
+  ImageId:
+    Type: AWS::EC2::Image::Id
+    Description: >
+      Debian 12 AMI id for this region. Find it with:
+      aws ec2 describe-images --owners 136693071363
+      --filters "Name=name,Values=debian-12-amd64-*"
+      --query 'sort_by(Images,&CreationDate)[-1].ImageId' --output text
+  InstanceType:
+    Type: String
+    Default: t3.medium
+    Description: t3.medium (x86) or t4g.medium (arm64 — use an arm64 AMI).
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Existing EC2 key pair for SSH.
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC to launch into (e.g. your default VPC).
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Public subnet in that VPC.
+  SSHLocation:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: CIDR allowed to SSH — restrict to your IP (e.g. 203.0.113.4/32).
+  RootVolumeGb:
+    Type: Number
+    Default: 30
+  Domain:
+    Type: String
+    Default: ""
+    Description: e.g. receipts.example.com. Leave empty to skip TLS on first boot.
+  LetsEncryptEmail:
+    Type: String
+    Default: ""
+  RepoBranch:
+    Type: String
+    Default: claude/samaritech-amreceipts
+  OcrProvider:
+    Type: String
+    Default: stub
+    AllowedValues: [stub, tesseract, google-vision]
+  BarcodeProvider:
+    Type: String
+    Default: upcitemdb
+    AllowedValues: [upcitemdb, local]
+
+Conditions:
+  HasDomain: !Not [!Equals [!Ref Domain, ""]]
+
+Resources:
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: AmReceipts SSH (restricted), HTTP, HTTPS
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 22, ToPort: 22, CidrIp: !Ref SSHLocation, Description: SSH }
+        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0, Description: HTTP }
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: HTTPS }
+      Tags: [{ Key: Name, Value: amreceipts-sg }]
+
+  Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref ImageId
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds: [!Ref SecurityGroup]
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeType: gp3
+            VolumeSize: !Ref RootVolumeGb
+            Encrypted: true
+      MetadataOptions:
+        HttpTokens: required   # IMDSv2 only
+      Tags: [{ Key: Name, Value: amreceipts-app }]
+      UserData:
+        Fn::Base64: !Sub |
+          #!/usr/bin/env bash
+          export DOMAIN="${Domain}"
+          export LETSENCRYPT_EMAIL="${LetsEncryptEmail}"
+          export REPO_BRANCH="${RepoBranch}"
+          export OCR_PROVIDER="${OcrProvider}"
+          export BARCODE_PROVIDER="${BarcodeProvider}"
+          curl -fsSL "https://raw.githubusercontent.com/streetshade/AmReceipts/${RepoBranch}/deploy/cloud-init.sh" -o /root/amreceipts-cloud-init.sh
+          bash /root/amreceipts-cloud-init.sh
+
+  ElasticIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref Instance
+      Tags: [{ Key: Name, Value: amreceipts-eip }]
+
+Outputs:
+  PublicIP:
+    Description: Elastic IP — point your DNS A record here.
+    Value: !Ref ElasticIP
+  SSHCommand:
+    Description: SSH in (default Debian user is 'admin').
+    Value: !Sub "ssh admin@${ElasticIP}"
+  AppURL:
+    Value: !If [HasDomain, !Sub "https://${Domain}", !Sub "http://${ElasticIP}"]
