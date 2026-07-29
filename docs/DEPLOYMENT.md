@@ -21,7 +21,8 @@ node -v   # v20.x
 ## 2. Application user and code
 
 ```bash
-sudo useradd --system --create-home --home-dir /opt/amreceipts --shell /usr/sbin/nologin amreceipts
+sudo useradd --system --home-dir /opt/amreceipts --shell /usr/sbin/nologin amreceipts
+sudo install -d -o amreceipts -g amreceipts /opt/amreceipts   # empty, owned dir (git clone needs it empty)
 sudo -u amreceipts git clone <your-repo-url> /opt/amreceipts
 cd /opt/amreceipts
 sudo -u amreceipts npm ci

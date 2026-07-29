@@ -54,13 +54,21 @@ if [ "$mem_mb" -lt 3000 ] && [ ! -f /swapfile ]; then
 fi
 
 # --- 3. App user + code --------------------------------------------------------------
-id amreceipts &>/dev/null || useradd --system --create-home --home-dir "$APP_DIR" --shell /usr/sbin/nologin amreceipts
+id amreceipts &>/dev/null || useradd --system --home-dir "$APP_DIR" --shell /usr/sbin/nologin amreceipts
+install -d -o amreceipts -g amreceipts "$APP_DIR"
 clone_url="$REPO_URL"
 if [ -n "$GIT_TOKEN" ]; then
   clone_url="https://x-access-token:${GIT_TOKEN}@${REPO_URL#https://}"
 fi
+# Clone in place. The home dir may contain skeleton dotfiles (or content from a
+# prior run), so a plain `git clone <dir>` would fail ("destination not empty").
+# git init + fetch + checkout -f populates the directory regardless.
 if [ ! -d "$APP_DIR/.git" ]; then
-  sudo -u amreceipts git clone --branch "$REPO_BRANCH" "$clone_url" "$APP_DIR"
+  sudo -u amreceipts git -C "$APP_DIR" init -q
+  sudo -u amreceipts git -C "$APP_DIR" remote add origin "$clone_url" 2>/dev/null \
+    || sudo -u amreceipts git -C "$APP_DIR" remote set-url origin "$clone_url"
+  sudo -u amreceipts git -C "$APP_DIR" fetch --depth 1 origin "$REPO_BRANCH"
+  sudo -u amreceipts git -C "$APP_DIR" checkout -f -b "$REPO_BRANCH" FETCH_HEAD
 fi
 cd "$APP_DIR"
 sudo -u amreceipts npm ci
