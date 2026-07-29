@@ -28,7 +28,9 @@ After apply, Terraform prints `public_ip`, `ssh_command`, `app_url` and `next_st
    sudo tail -f /var/log/amreceipts-provision.log
    ```
 3. If DNS wasn't ready when cloud-init ran, finish TLS manually:
-   `sudo certbot --nginx -d <domain>`
+   `sudo certbot --nginx -d <domain>`. (If you deployed with an empty `domain`,
+   first set the server name so certbot can match it:
+   `sudo sed -i 's/server_name _;/server_name <domain>;/' /etc/nginx/sites-available/amreceipts && sudo systemctl reload nginx`.)
 4. **Rotate the seeded demo accounts** (`admin@`/`approver@`/`demo@amreceipts.app`).
 5. For `ocr_provider = "google-vision"`, upload the service-account key to
    `/etc/amreceipts/gcp-vision.json` and `sudo systemctl restart amreceipts`.

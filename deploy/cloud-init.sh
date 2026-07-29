@@ -158,7 +158,10 @@ rm -f /etc/nginx/sites-enabled/default
 nginx -t && systemctl reload nginx
 
 # --- 9. TLS (best effort; needs DNS already pointing at this host) -------------------
-tls_note="TLS not configured (no domain/email given, or DNS not ready). Run: sudo certbot --nginx -d ${DOMAIN}"
+tls_note="TLS not configured (no domain/email given, or DNS not ready). To add it later, point DNS at this host, then:
+  sudo sed -i 's/server_name _;/server_name YOUR.DOMAIN;/' /etc/nginx/sites-available/amreceipts
+  sudo nginx -t && sudo systemctl reload nginx
+  sudo certbot --nginx -d YOUR.DOMAIN --redirect"
 if [ -n "$DOMAIN" ] && [ -n "$LETSENCRYPT_EMAIL" ]; then
   if certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos -m "$LETSENCRYPT_EMAIL" --redirect; then
     tls_note="TLS configured for https://${DOMAIN}"
