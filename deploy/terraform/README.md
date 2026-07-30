@@ -32,8 +32,12 @@ After apply, Terraform prints `public_ip`, `ssh_command`, `app_url` and `next_st
    first set the server name so certbot can match it:
    `sudo sed -i 's/server_name _;/server_name <domain>;/' /etc/nginx/sites-available/amreceipts && sudo systemctl reload nginx`.)
 4. **Rotate the seeded demo accounts** (`admin@`/`approver@`/`demo@amreceipts.app`).
-5. For `ocr_provider = "google-vision"`, upload the service-account key to
-   `/etc/amreceipts/gcp-vision.json` and `sudo systemctl restart amreceipts`.
+5. OCR: the default is **`google-vision`**. Set `gcp_vision_key_file` to a
+   service-account JSON key (Vision API enabled + billing on) and the instance does
+   real OCR on first boot. If you leave it empty, add the key after boot instead:
+   upload it to `/etc/amreceipts/gcp-vision.json` (chmod 600, owned by `amreceipts`)
+   and `sudo systemctl restart amreceipts`. (Or set `ocr_provider = "tesseract"` for
+   on-device OCR, or `"stub"` for the offline placeholder.)
 
 ## Notes
 
@@ -42,8 +46,11 @@ After apply, Terraform prints `public_ip`, `ssh_command`, `app_url` and `next_st
   See [`../../docs/AWS-DEPLOYMENT.md`](../../docs/AWS-DEPLOYMENT.md) for the full sizing table.
 - **Secrets:** the app's `AUTH_SECRET`, `CRON_SECRET` and DB password are generated
   **on the instance** by cloud-init — they are not in Terraform state. `git_token`
-  (if set for a private repo) is passed via user-data and is marked sensitive; prefer
-  a public repo or a short-lived token.
+  (if set for a private repo) and the `gcp_vision_key_file` contents are passed via
+  user-data (base64) and are marked sensitive; user-data is readable from instance
+  metadata, so prefer short-lived tokens and rotate the Vision key if needed. For a
+  higher-security setup, store the key in SSM Parameter Store / Secrets Manager and
+  fetch it in a custom boot step instead.
 - **Default VPC:** deploys into the account's default VPC for simplicity. Adapt
   `main.tf` (subnet/VPC data sources) to place it in a specific network.
 - **user-data runs once** (first boot only). Changing `cloud-init.sh` afterwards does

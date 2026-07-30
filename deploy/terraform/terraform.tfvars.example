@@ -12,7 +12,11 @@ domain            = "receipts.example.com"  # leave "" to skip TLS on first boot
 letsencrypt_email = "ops@example.com"
 
 repo_branch      = "claude/samaritech-amreceipts"
-ocr_provider     = "stub"        # stub | tesseract | google-vision
+ocr_provider     = "google-vision"   # google-vision | tesseract | stub
 barcode_provider = "upcitemdb"
+
+# Google Vision key delivered at launch so real OCR works on first boot.
+# Path to the service-account JSON on THIS machine (running Terraform):
+gcp_vision_key_file = "./gcp-vision.json"
 
 # git_token = "ghp_xxx"          # only if the repo is private
