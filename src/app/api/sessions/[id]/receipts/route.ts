@@ -3,10 +3,27 @@ import path from "path";
 import crypto from "crypto";
 import { prisma } from "@/lib/db";
 import { handler, json, error, requireUserId } from "@/lib/api";
-import { getOcrProvider } from "@/lib/providers/ocr";
+import { getOcrProvider, type ParsedReceipt } from "@/lib/providers/ocr";
 import { reconcilePaymentMethod } from "@/lib/payments";
 
 type Params = { params: { id: string } };
+
+// Turn a parsed receipt into line-item rows, breaking tax out as its own
+// `kind: "tax"` line (so it can be included/excluded when costing to a job).
+// If the OCR already produced a tax line, we don't add a duplicate.
+function buildLineItems(parsed: ParsedReceipt) {
+  const rows = parsed.lineItems.map((li) => ({
+    description: li.description,
+    quantity: li.quantity,
+    amount: li.amount,
+    kind: li.kind ?? "item",
+  }));
+  const hasTaxLine = rows.some((r) => r.kind === "tax");
+  if (!hasTaxLine && parsed.tax != null && parsed.tax > 0) {
+    rows.push({ description: "Tax", quantity: 1, amount: parsed.tax, kind: "tax" });
+  }
+  return rows;
+}
 
 const UPLOAD_DIR = path.join(process.cwd(), "public", "uploads");
 const MAX_BYTES = 12 * 1024 * 1024; // 12MB
@@ -63,11 +80,7 @@ export const POST = handler(async (req: Request, { params }: Params) => {
       status: "processed",
       rawText: parsed.rawText,
       lineItems: {
-        create: parsed.lineItems.map((li) => ({
-          description: li.description,
-          quantity: li.quantity,
-          amount: li.amount,
-        })),
+        create: buildLineItems(parsed),
       },
     },
     include: { lineItems: true, paymentMethod: true },

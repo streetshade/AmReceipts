@@ -7,6 +7,7 @@ export interface LineItemDTO {
   description: string;
   quantity: number;
   amount: number;
+  kind: string; // "item" | "tax"
   linkedScannedItemId: string | null;
 }
 
@@ -21,6 +22,7 @@ export interface ReceiptDTO {
   paymentRaw: string | null;
   paymentLabel: string | null;
   status: string;
+  rawText: string | null;
   lineItems: LineItemDTO[];
 }
 
@@ -82,11 +84,13 @@ export function toSessionDTO(s: LoadedSession): SessionDTO {
       paymentRaw: r.paymentRaw,
       paymentLabel: r.paymentMethod?.label ?? null,
       status: r.status,
+      rawText: r.rawText,
       lineItems: r.lineItems.map((li) => ({
         id: li.id,
         description: li.description,
         quantity: li.quantity,
         amount: li.amount,
+        kind: li.kind,
         linkedScannedItemId: li.scannedItem?.id ?? null,
       })),
     })),
