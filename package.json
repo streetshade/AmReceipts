@@ -17,6 +17,7 @@
     "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
+    "@google-cloud/documentai": "^8.11.0",
     "@google-cloud/vision": "^4.3.2",
     "@prisma/client": "^5.18.0",
     "@zxing/browser": "^0.1.5",

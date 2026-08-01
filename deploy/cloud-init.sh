@@ -25,8 +25,12 @@ echo "=== AmReceipts provisioning started: $(date -u) ==="
 : "${REPO_URL:=https://github.com/streetshade/AmReceipts.git}"
 : "${REPO_BRANCH:=claude/samaritech-amreceipts}"
 : "${GIT_TOKEN:=}"                    # set only if the repo is PRIVATE (a PAT with read access)
-: "${OCR_PROVIDER:=stub}"            # stub | tesseract | google-vision
+: "${OCR_PROVIDER:=stub}"            # stub | tesseract | google-vision | documentai
 : "${BARCODE_PROVIDER:=upcitemdb}"    # upcitemdb | local
+# Document AI (only used when OCR_PROVIDER=documentai):
+: "${DOCAI_LOCATION:=us}"             # us | eu (must match the processor's region)
+: "${DOCAI_PROCESSOR_ID:=}"           # Expense/Invoice processor ID from the console
+: "${DOCAI_PROJECT_ID:=}"             # optional; defaults to the credentials' project
 # =====================================================================================
 
 APP_DIR=/opt/amreceipts
@@ -100,6 +104,9 @@ AUTH_SECRET="${AUTH_SECRET}"
 CRON_SECRET="${CRON_SECRET}"
 OCR_PROVIDER="${OCR_PROVIDER}"
 GOOGLE_APPLICATION_CREDENTIALS="${ENV_DIR}/gcp-vision.json"
+DOCAI_LOCATION="${DOCAI_LOCATION}"
+DOCAI_PROCESSOR_ID="${DOCAI_PROCESSOR_ID}"
+DOCAI_PROJECT_ID="${DOCAI_PROJECT_ID}"
 BARCODE_PROVIDER="${BARCODE_PROVIDER}"
 NODE_ENV="production"
 PORT="3000"
