@@ -119,7 +119,7 @@ sudo install -d -o amreceipts -g amreceipts /opt/amreceipts   # empty, owned dir
 sudo -u amreceipts git clone https://github.com/streetshade/AmReceipts.git /opt/amreceipts
 cd /opt/amreceipts
 sudo -u amreceipts git checkout claude/samaritech-amreceipts   # or your release branch/tag
-sudo -u amreceipts npm ci     # full install (build needs devDeps: prisma, tailwind, tsx)
+sudo -u amreceipts npm ci --include=dev   # full install; --include=dev is REQUIRED — the build needs typescript/tailwind/postcss/@types
 ```
 
 ---
@@ -323,14 +323,31 @@ whole-volume safety net. Restore a dump with
 
 ## 14. Updating the app
 
+> **Important — do not source the app env before installing.** The env file sets
+> `NODE_ENV=production`, and if that is in scope when you run `npm ci`, npm omits
+> **devDependencies** (typescript, tailwind, postcss, @types). The build then fails
+> with misleading `Can't resolve '@/...'` errors. So: install with `--include=dev`,
+> and only source the env for the build/migrate step (which needs `DATABASE_URL`).
+
 ```bash
 cd /opt/amreceipts
+
+# 1. Update code. If prisma/schema.prisma has the local sqlite→postgres edit, reset it first:
+sudo -u amreceipts git checkout -- prisma/schema.prisma 2>/dev/null || true
 sudo -u amreceipts git pull        # or checkout the new release branch/tag
-sudo -u amreceipts npm ci
+sudo -u amreceipts sed -i 's/provider = "sqlite"/provider = "postgresql"/' prisma/schema.prisma
+
+# 2. Install WITH dev deps (do NOT source the env here — see the warning above)
+sudo -u amreceipts npm ci --include=dev
+
+# 3. Build + migrate, sourcing the env only for these commands (they need DATABASE_URL)
 sudo -u amreceipts --preserve-env=PATH bash -c '
   set -a; . /etc/amreceipts/amreceipts.env; set +a
-  npm run build && npx prisma db push
+  npx prisma generate
+  npx prisma db push
+  npm run build
 '
+
 sudo systemctl restart amreceipts
 ```
 
