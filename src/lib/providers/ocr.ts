@@ -5,6 +5,7 @@ export interface ParsedLineItem {
   description: string;
   quantity: number;
   amount: number; // cents
+  kind?: "item" | "tax";
 }
 
 export interface ParsedReceipt {
