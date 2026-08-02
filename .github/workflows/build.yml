@@ -1,0 +1,39 @@
+name: Build
+
+# Verifies every PR (and pushes to the main lines) with a from-lockfile install
+# and a production build. This is the exact guard for the failure we hit in
+# deployment: if the build toolchain is ever dropped or an "@/..." path alias
+# stops resolving, `next build` fails here — before it can reach a server.
+
+on:
+  pull_request:
+  push:
+    branches: [main, claude/documentai-ocr]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      # Dummy values so `prisma generate` / `next build` have what they read at
+      # build time. The committed schema uses the sqlite provider, so a file URL
+      # is valid; none of these are used at runtime.
+      DATABASE_URL: "file:./ci.db"
+      AUTH_SECRET: "ci-dummy-secret"
+      CRON_SECRET: "ci-dummy-cron-secret"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      # --include=dev is explicit on purpose — the build needs typescript,
+      # tailwind, postcss and @types, which a production-mode install omits.
+      - name: Install dependencies (including devDependencies)
+        run: npm ci --include=dev
+
+      # `next build` runs `tsc` type-checking as part of the build, so a broken
+      # import or type error fails the job here.
+      - name: Build
+        run: npm run build
