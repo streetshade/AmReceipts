@@ -75,7 +75,12 @@ if [ ! -d "$APP_DIR/.git" ]; then
   sudo -u amreceipts git -C "$APP_DIR" checkout -f -b "$REPO_BRANCH" FETCH_HEAD
 fi
 cd "$APP_DIR"
-sudo -u amreceipts npm ci
+# Install ALL dependencies including devDependencies. `--include=dev` is explicit
+# on purpose: `next build` needs the build toolchain (typescript, tailwind, postcss,
+# @types/*). If NODE_ENV=production is ever in scope, a bare `npm ci` silently omits
+# devDependencies and the build then fails with misleading "Can't resolve '@/...'"
+# module errors (Next only wires up the tsconfig path alias when TypeScript is present).
+sudo -u amreceipts npm ci --include=dev
 
 # --- 4. PostgreSQL (local) -----------------------------------------------------------
 DB_PASS=$(openssl rand -hex 16)
