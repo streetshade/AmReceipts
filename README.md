@@ -52,8 +52,9 @@ Retries run opportunistically on scans/lookups, and can also be driven on a sche
 - **Prisma** ORM (SQLite by default; swap to Postgres for production)
 - **Pluggable providers** so it runs with **zero API keys** in dev, and swaps to
   production services with an env var:
-  - OCR: `stub` (deterministic, offline), `tesseract` (real on-device OCR), or
-    `google-vision` (Google Cloud Vision — best receipt accuracy)
+  - OCR: `stub` (deterministic, offline), `tesseract` (on-device OCR),
+    `google-vision` (Vision OCR text → heuristic field parser), or `documentai`
+    (Google Document AI Expense parser → structured fields, best receipt accuracy)
   - Barcode: `local` (seeded DB) or `upcitemdb` (online lookup, caches into the local DB)
 
 The seeded barcode catalogue is weighted toward **Home Depot and other hardware /
@@ -113,13 +114,26 @@ In `.env`:
 # On-device OCR (no external service):
 OCR_PROVIDER="tesseract"
 
-# Google Cloud Vision OCR (recommended for production accuracy):
+# Google Cloud Vision OCR (raw text -> heuristic field parser):
 OCR_PROVIDER="google-vision"
 GOOGLE_APPLICATION_CREDENTIALS="/etc/amreceipts/gcp-vision.json"  # service-account key
+
+# Google Document AI Expense parser (structured fields -> best receipt accuracy):
+OCR_PROVIDER="documentai"
+GOOGLE_APPLICATION_CREDENTIALS="/etc/amreceipts/gcp-vision.json"  # same service-account key
+DOCAI_LOCATION="us"                # us | eu (must match the processor's region)
+DOCAI_PROCESSOR_ID="xxxxxxxxxxxx"  # from the Document AI console
 
 # Online barcode lookup, falling back to (and caching into) the seeded DB:
 BARCODE_PROVIDER="upcitemdb"
 ```
+
+**Vision vs Document AI:** `google-vision` returns raw OCR text that a built-in
+regex parser turns into fields — cheaper, but heuristic. `documentai` uses a trained
+Expense/Invoice processor that returns structured fields (merchant, date, total,
+tax, line items) directly — more accurate on real-world receipts, at a higher
+per-page cost. Both use the same service-account credentials; Document AI also needs
+a processor created in the console (its region + ID above).
 
 Providers are defined in `src/lib/providers/`. To add another backend (AWS Textract,
 a different barcode source, …) implement the `OcrProvider` / `BarcodeProvider`

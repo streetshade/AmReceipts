@@ -25,8 +25,12 @@ echo "=== AmReceipts provisioning started: $(date -u) ==="
 : "${REPO_URL:=https://github.com/streetshade/AmReceipts.git}"
 : "${REPO_BRANCH:=claude/samaritech-amreceipts}"
 : "${GIT_TOKEN:=}"                    # set only if the repo is PRIVATE (a PAT with read access)
-: "${OCR_PROVIDER:=stub}"            # stub | tesseract | google-vision
+: "${OCR_PROVIDER:=stub}"            # stub | tesseract | google-vision | documentai
 : "${BARCODE_PROVIDER:=upcitemdb}"    # upcitemdb | local
+# Document AI (only used when OCR_PROVIDER=documentai):
+: "${DOCAI_LOCATION:=us}"             # us | eu (must match the processor's region)
+: "${DOCAI_PROCESSOR_ID:=}"           # Expense/Invoice processor ID from the console
+: "${DOCAI_PROJECT_ID:=}"             # optional; defaults to the credentials' project
 # =====================================================================================
 
 APP_DIR=/opt/amreceipts
@@ -71,7 +75,12 @@ if [ ! -d "$APP_DIR/.git" ]; then
   sudo -u amreceipts git -C "$APP_DIR" checkout -f -b "$REPO_BRANCH" FETCH_HEAD
 fi
 cd "$APP_DIR"
-sudo -u amreceipts npm ci
+# Install ALL dependencies including devDependencies. `--include=dev` is explicit
+# on purpose: `next build` needs the build toolchain (typescript, tailwind, postcss,
+# @types/*). If NODE_ENV=production is ever in scope, a bare `npm ci` silently omits
+# devDependencies and the build then fails with misleading "Can't resolve '@/...'"
+# module errors (Next only wires up the tsconfig path alias when TypeScript is present).
+sudo -u amreceipts npm ci --include=dev
 
 # --- 4. PostgreSQL (local) -----------------------------------------------------------
 DB_PASS=$(openssl rand -hex 16)
@@ -100,6 +109,9 @@ AUTH_SECRET="${AUTH_SECRET}"
 CRON_SECRET="${CRON_SECRET}"
 OCR_PROVIDER="${OCR_PROVIDER}"
 GOOGLE_APPLICATION_CREDENTIALS="${ENV_DIR}/gcp-vision.json"
+DOCAI_LOCATION="${DOCAI_LOCATION}"
+DOCAI_PROCESSOR_ID="${DOCAI_PROCESSOR_ID}"
+DOCAI_PROJECT_ID="${DOCAI_PROJECT_ID}"
 BARCODE_PROVIDER="${BARCODE_PROVIDER}"
 NODE_ENV="production"
 PORT="3000"

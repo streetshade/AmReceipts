@@ -16,6 +16,7 @@ const LineItem = z.object({
   description: z.string().min(1).max(200),
   quantity: z.number().int().min(1).max(9999),
   amount: z.number().int(), // cents
+  kind: z.enum(["item", "tax"]).optional(),
 });
 
 const PatchBody = z.object({
@@ -68,7 +69,13 @@ export const PATCH = handler(async (req: Request, { params }: Params) => {
       await tx.lineItem.deleteMany({ where: { receiptId: receipt.id } });
       for (const li of body.lineItems) {
         await tx.lineItem.create({
-          data: { receiptId: receipt.id, description: li.description, quantity: li.quantity, amount: li.amount },
+          data: {
+            receiptId: receipt.id,
+            description: li.description,
+            quantity: li.quantity,
+            amount: li.amount,
+            kind: li.kind ?? "item",
+          },
         });
       }
     }

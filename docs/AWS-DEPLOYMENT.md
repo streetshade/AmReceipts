@@ -119,7 +119,7 @@ sudo install -d -o amreceipts -g amreceipts /opt/amreceipts   # empty, owned dir
 sudo -u amreceipts git clone https://github.com/streetshade/AmReceipts.git /opt/amreceipts
 cd /opt/amreceipts
 sudo -u amreceipts git checkout claude/samaritech-amreceipts   # or your release branch/tag
-sudo -u amreceipts npm ci     # full install (build needs devDeps: prisma, tailwind, tsx)
+sudo -u amreceipts npm ci --include=dev   # full install; --include=dev is REQUIRED — the build needs typescript/tailwind/postcss/@types
 ```
 
 ---
@@ -243,6 +243,28 @@ If `OCR_PROVIDER=google-vision`:
    ```
 3. `GOOGLE_APPLICATION_CREDENTIALS` in the env file must point at that path.
 
+### Document AI Expense parser (`OCR_PROVIDER=documentai`) — best receipt accuracy
+
+Document AI returns **structured fields** (merchant, date, total, tax, line items)
+from a trained model instead of raw OCR text, so it's more accurate on real receipts
+(at a higher per-page cost). Same service-account key, plus a processor:
+
+1. Enable the **Cloud Document AI API** and ensure **billing** is on.
+2. Document AI → **Processors → Create processor → Expense Parser** (or Invoice).
+   Pick a region (**us** or **eu**) and note the **Processor ID**.
+3. Grant the service account access to Document AI (e.g. role **Document AI API User**),
+   and reuse the same JSON key at `/etc/amreceipts/gcp-vision.json`.
+4. In `/etc/amreceipts/amreceipts.env`:
+   ```env
+   OCR_PROVIDER="documentai"
+   GOOGLE_APPLICATION_CREDENTIALS="/etc/amreceipts/gcp-vision.json"
+   DOCAI_LOCATION="us"                 # must match the processor's region
+   DOCAI_PROCESSOR_ID="<your-processor-id>"
+   # DOCAI_PROJECT_ID="..."            # optional; auto-detected from the key
+   ```
+   then `sudo systemctl restart amreceipts`. (cloud-init also accepts
+   `DOCAI_LOCATION` / `DOCAI_PROCESSOR_ID` / `DOCAI_PROJECT_ID` at launch.)
+
 **Alternatives:** `OCR_PROVIDER=tesseract` runs OCR on-box (no external service, but
 CPU-heavy — size accordingly, §1). `OCR_PROVIDER=stub` is deterministic/offline for
 demos. Barcode lookups (`BARCODE_PROVIDER=upcitemdb`) need outbound HTTPS to
@@ -301,14 +323,31 @@ whole-volume safety net. Restore a dump with
 
 ## 14. Updating the app
 
+> **Important — do not source the app env before installing.** The env file sets
+> `NODE_ENV=production`, and if that is in scope when you run `npm ci`, npm omits
+> **devDependencies** (typescript, tailwind, postcss, @types). The build then fails
+> with misleading `Can't resolve '@/...'` errors. So: install with `--include=dev`,
+> and only source the env for the build/migrate step (which needs `DATABASE_URL`).
+
 ```bash
 cd /opt/amreceipts
+
+# 1. Update code. If prisma/schema.prisma has the local sqlite→postgres edit, reset it first:
+sudo -u amreceipts git checkout -- prisma/schema.prisma 2>/dev/null || true
 sudo -u amreceipts git pull        # or checkout the new release branch/tag
-sudo -u amreceipts npm ci
+sudo -u amreceipts sed -i 's/provider = "sqlite"/provider = "postgresql"/' prisma/schema.prisma
+
+# 2. Install WITH dev deps (do NOT source the env here — see the warning above)
+sudo -u amreceipts npm ci --include=dev
+
+# 3. Build + migrate, sourcing the env only for these commands (they need DATABASE_URL)
 sudo -u amreceipts --preserve-env=PATH bash -c '
   set -a; . /etc/amreceipts/amreceipts.env; set +a
-  npm run build && npx prisma db push
+  npx prisma generate
+  npx prisma db push
+  npm run build
 '
+
 sudo systemctl restart amreceipts
 ```
 

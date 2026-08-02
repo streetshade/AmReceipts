@@ -5,6 +5,7 @@ export interface ParsedLineItem {
   description: string;
   quantity: number;
   amount: number; // cents
+  kind?: "item" | "tax";
 }
 
 export interface ParsedReceipt {
@@ -257,6 +258,115 @@ class GoogleVisionOcrProvider implements OcrProvider {
   }
 }
 
+// --- Google Document AI provider: structured receipt/expense parsing ----------
+//
+// Unlike the OCR-text providers above, Document AI's Expense/Invoice processor
+// returns *typed entities* (supplier, date, total, tax, line items), so this
+// provider maps them straight to ParsedReceipt and skips parseReceiptText.
+// Requires DOCAI_PROCESSOR_ID (+ DOCAI_LOCATION, default "us") and the same
+// service-account credentials as Vision (GOOGLE_APPLICATION_CREDENTIALS).
+
+let docaiClient: import("@google-cloud/documentai").DocumentProcessorServiceClient | null = null;
+
+async function getDocAiClient(location: string) {
+  if (docaiClient) return docaiClient;
+  const docai = await import("@google-cloud/documentai");
+  // Document AI is region-scoped; the endpoint must match the processor's region.
+  docaiClient = new docai.DocumentProcessorServiceClient({
+    apiEndpoint: `${location}-documentai.googleapis.com`,
+  });
+  return docaiClient;
+}
+
+/** Money entity -> integer cents (prefers the normalized moneyValue). */
+function entMoneyCents(e: any): number | null {
+  const m = e?.normalizedValue?.moneyValue;
+  if (m && (m.units != null || m.nanos != null)) {
+    return Math.round(Number(m.units ?? 0) * 100 + Number(m.nanos ?? 0) / 1e7);
+  }
+  return parseToCents(e?.normalizedValue?.text ?? e?.mentionText ?? null);
+}
+
+/** Date entity -> ISO string (prefers the normalized dateValue). */
+function entDateISO(e: any): string | null {
+  const d = e?.normalizedValue?.dateValue;
+  if (d?.year && d?.month && d?.day) {
+    const dt = new Date(Date.UTC(d.year, d.month - 1, d.day));
+    if (!Number.isNaN(dt.getTime())) return dt.toISOString();
+  }
+  const t = e?.normalizedValue?.text ?? e?.mentionText;
+  if (t) {
+    const dt = new Date(t);
+    if (!Number.isNaN(dt.getTime())) return dt.toISOString();
+  }
+  return null;
+}
+
+function entText(e: any): string | null {
+  return ((e?.normalizedValue?.text ?? e?.mentionText) || null) as string | null;
+}
+
+/** Map a Document AI Expense/Invoice document to our ParsedReceipt shape. */
+function mapExpenseDocument(doc: any): ParsedReceipt {
+  const entities: any[] = doc?.entities ?? [];
+  const first = (type: string) => entities.find((e) => e?.type === type);
+
+  const dateEnt = first("receipt_date") ?? first("purchase_date") ?? first("invoice_date");
+  const payType = entText(first("payment_type"));
+  const last4 = entText(first("credit_card_last_four_digits"));
+  let paymentRaw: string | null = null;
+  if (payType || last4) {
+    const brand = (payType ?? "CARD").toUpperCase().replace(/_/g, " ").trim();
+    paymentRaw = last4 ? `${brand} ****${last4}` : brand;
+  }
+
+  const lineItems: ParsedLineItem[] = [];
+  for (const e of entities) {
+    if (e?.type !== "line_item") continue;
+    const props: any[] = e.properties ?? [];
+    const pFirst = (t: string) => props.find((p) => p?.type === t);
+    const description = (entText(pFirst("line_item/description")) ?? entText(e) ?? "").trim();
+    const amount = entMoneyCents(pFirst("line_item/amount"));
+    const qtyText = entText(pFirst("line_item/quantity"));
+    const quantity = qtyText ? Math.max(1, Math.round(Number(qtyText.replace(/[^0-9.]/g, "")) || 1)) : 1;
+    if (description && amount != null) {
+      lineItems.push({ description: description.slice(0, 200), quantity, amount });
+    }
+  }
+
+  return {
+    merchant: entText(first("supplier_name")),
+    purchaseDate: dateEnt ? entDateISO(dateEnt) : null,
+    paymentRaw,
+    subtotal: entMoneyCents(first("net_amount")),
+    tax: entMoneyCents(first("total_tax_amount")),
+    total: entMoneyCents(first("total_amount")),
+    lineItems,
+    rawText: doc?.text ?? "",
+  };
+}
+
+class DocumentAiOcrProvider implements OcrProvider {
+  readonly name = "documentai";
+
+  async process(image: Buffer, mime: string): Promise<ParsedReceipt> {
+    const location = (process.env.DOCAI_LOCATION || "us").toLowerCase();
+    const processorId = process.env.DOCAI_PROCESSOR_ID;
+    if (!processorId) throw new Error("DOCAI_PROCESSOR_ID is not set");
+
+    const client = await getDocAiClient(location);
+    const projectId = process.env.DOCAI_PROJECT_ID || (await client.getProjectId());
+    const name = `projects/${projectId}/locations/${location}/processors/${processorId}`;
+
+    const [result] = await client.processDocument({
+      name,
+      rawDocument: { content: image, mimeType: mime || "image/jpeg" },
+    } as any);
+    if (!result?.document) throw new Error("Document AI returned no document");
+    return mapExpenseDocument(result.document);
+  }
+}
+
 export function getOcrProvider(): OcrProvider {
   const which = (process.env.OCR_PROVIDER || "stub").toLowerCase();
   switch (which) {
@@ -266,6 +376,10 @@ export function getOcrProvider(): OcrProvider {
     case "google-vision":
     case "googlevision":
       return new GoogleVisionOcrProvider();
+    case "documentai":
+    case "document-ai":
+    case "docai":
+      return new DocumentAiOcrProvider();
     case "stub":
     default:
       return new StubOcrProvider();

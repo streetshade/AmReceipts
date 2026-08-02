@@ -196,6 +196,9 @@ model LineItem {
   description String
   quantity    Int     @default(1)
   amount      Int // cents, line total
+  // "item" (goods/services) | "tax" — tax is broken out as its own line so it
+  // can be included or excluded when costing lines against a job.
+  kind        String  @default("item")
 
   // A scanned product may link to this line item (barcode <-> receipt reconciliation).
   scannedItem ScannedItem?
