@@ -16,6 +16,14 @@ import type { M3ConnectionConfig } from "./config";
 
 export type MIRecord = Record<string, string>;
 
+export type MIFailureReason =
+  | "invalid_request"
+  | "auth"
+  | "not_delivered"
+  | "unknown_delivery"
+  | "rejected"
+  | "http_error";
+
 export type MIResult =
   | {
       ok: true;
@@ -30,6 +38,19 @@ export type MIResult =
       ok: false;
       message: string;
       status: number;
+      /**
+       * Why it failed, as a closed set rather than a message to be sniffed.
+       * The posting worker maps this onto queue outcomes, and a total mapping
+       * is the difference between a safe classification and a guess.
+       *
+       *   invalid_request  - never left this process
+       *   auth             - no token, so nothing was dispatched
+       *   not_delivered    - PROVABLY never reached M3 (no TLS connection)
+       *   unknown_delivery - reached M3, outcome unknown
+       *   rejected         - M3 explicitly refused it
+       *   http_error       - HTTP or protocol failure at the gateway
+       */
+      reason: MIFailureReason;
       // The write may or may not have been applied - we do not know. Never
       // retry it. Reconcile by querying M3 for the posting's external
       // reference, and escalate to manual review if that is inconclusive.
@@ -44,7 +65,7 @@ export type MetadataResult =
 // Raw HTTP outcome before MI-shaped interpretation.
 type RawResult =
   | { ok: true; status: number; body: string }
-  | { ok: false; message: string; status: number; ambiguous: boolean };
+  | { ok: false; message: string; status: number; ambiguous: boolean; reason: MIFailureReason };
 
 interface CachedToken {
   accessToken: string;
@@ -287,7 +308,13 @@ export class M3Client {
   ): Promise<MIResult> {
     if (!SAFE_NAME.test(program) || !SAFE_NAME.test(transaction)) {
       // Never dispatched, so unambiguous even for a write.
-      return { ok: false, message: "Invalid program or transaction name.", status: 0, ambiguous: false };
+      return {
+        ok: false,
+        message: "Invalid program or transaction name.",
+        status: 0,
+        ambiguous: false,
+        reason: "invalid_request",
+      };
     }
 
     // Whitespace-only is treated as blank. The reference client compared
@@ -373,7 +400,9 @@ export class M3Client {
     }
 
     const attempts = this.config.readMaxRetries + 1;
-    let last: RawResult = { ok: false, message: "No attempt made.", status: 0, ambiguous: false };
+    let last: RawResult = {
+      ok: false, message: "No attempt made.", status: 0, ambiguous: false, reason: "invalid_request",
+    };
 
     for (let attempt = 0; attempt < attempts; attempt++) {
       last = await this.requestOnce(url, write, false);
@@ -402,13 +431,13 @@ export class M3Client {
       const token = await this.getToken(margin, forceFreshToken);
       if (token === null) {
         // Nothing was dispatched, so this is a definite failure even for a write.
-        return { ok: false, message: "Could not authenticate to M3.", status: 0, ambiguous: false };
+        return { ok: false, message: "Could not authenticate to M3.", status: 0, ambiguous: false, reason: "auth" };
       }
       headers.Authorization = `Bearer ${token}`;
     } else {
       const secrets = loadSecrets(this.config);
       if (!secrets.ok || secrets.secrets.authMode !== "basic") {
-        return { ok: false, message: "Could not load M3 basic credentials.", status: 0, ambiguous: false };
+        return { ok: false, message: "Could not load M3 basic credentials.", status: 0, ambiguous: false, reason: "auth" };
       }
       const pair = `${secrets.secrets.username}:${secrets.secrets.password}`;
       headers.Authorization = `Basic ${Buffer.from(pair).toString("base64")}`;
@@ -434,6 +463,7 @@ export class M3Client {
         // If we never completed the TLS handshake, the grid cannot have acted.
         // Once connected we make no claim: unknown, not failed.
         ambiguous: write && outcome.connected,
+        reason: outcome.connected ? "unknown_delivery" : "not_delivered",
       };
     }
 
@@ -447,10 +477,10 @@ export class M3Client {
     } catch {
       console.error(`M3Client: non-JSON response (HTTP ${status})`);
       // We cannot tell what the grid did from a body we cannot read.
-      return { ok: false, message: "Unexpected response from M3.", status, ambiguous: write };
+      return { ok: false, message: "Unexpected response from M3.", status, ambiguous: write, reason: "http_error" };
     }
     if (typeof json !== "object" || json === null) {
-      return { ok: false, message: "Unexpected response from M3.", status, ambiguous: write };
+      return { ok: false, message: "Unexpected response from M3.", status, ambiguous: write, reason: "http_error" };
     }
 
     const obj = json as Record<string, unknown>;
@@ -480,6 +510,7 @@ export class M3Client {
         message: errMsg !== "" ? errMsg : `M3 returned HTTP ${status}.`,
         status,
         ambiguous: write && !definitiveRejection,
+        reason: definitiveRejection ? "rejected" : "http_error",
       };
     }
 

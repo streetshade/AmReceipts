@@ -189,6 +189,79 @@ grid routes it. `scripts/probe_api.php` in that repo is a working example.
 This closes the master-data gap properly: the admin console can validate every
 routing rule against what the grid really offers, rather than against a guess.
 
+## The posting queue and audit trail
+
+`M3Posting` (one row per session) + `M3PostingLine` (what was sent) +
+`M3PostingAttempt` (append-only, every attempt).
+
+**Schema change required:** `npm run db:push`. This project has no
+`prisma/migrations` directory — `db push` is its convention — so nothing will
+work until the new tables exist.
+
+### At-most-once, by construction
+
+| Crash point | Result |
+|---|---|
+| After claim, before dispatch | Lease expires → `unknown`. Conservative: never retried |
+| After `beginAttempt`, mid-call | `in_flight` attempt survives → `unknown` |
+| M3 commits, worker dies before recording | `unknown`. Reconcile via `reference` |
+| Stale worker returns late | Fenced out by `claimToken`; its result is appended as a late attempt |
+
+Four mechanisms carry that:
+
+- **Deterministic `reference`** (`AMR` + 17 chars, Crockford base32, derived
+  from the session id) — unique, so a session cannot be enqueued twice, and
+  searchable in M3 so an ambiguous posting can be resolved.
+- **Write-ahead attempt log.** The attempt row is created *before* the call. An
+  attempt left `in_flight` is not a gap in the record; it is evidence that a
+  send began and never reported back.
+- **`claimToken` fencing.** A worker must present the token minted at claim time
+  to open an attempt, and the status check, token check and attempt-number
+  increment are a single conditional update. A timestamp alone proves nothing
+  about *who* holds the claim.
+- **`unknown` is a one-way door.** Nothing that could conceivably have reached
+  M3 is ever retried automatically. Only `not_delivered` (TLS never
+  established), `auth_error` (no token, nothing dispatched) and
+  `reconciled_absent` return to the queue.
+
+A worker that returns after its lease expired does not throw and does not
+overwrite: its result is appended as a new attempt, and a late `posted` with a
+voucher number is allowed to resolve `unknown` → `posted`. That is the single
+most valuable record in the trail.
+
+### The audit trail
+
+At `/postings`, scoped by role: a user sees their own, an approver their groups',
+an admin **all rows** — not "all current users", so postings from a deleted
+account stay visible, which is exactly when someone is auditing a leaver.
+
+Filter by **person**, **job**, status, accounting-date range, and reference or
+voucher number. Date filters run on `accountingDate` (a plain date string) not
+`createdAt`, so there is no timezone to shift a period boundary.
+
+Two CSV exports, because a posting has both lines and attempts and crossing them
+would multiply into nonsense:
+
+- **lines** — one row per voucher line: the accounting string as sent, receipt
+  and routing-rule provenance, suspense flag.
+- **attempts** — one row per attempt: outcome, timestamps, actor, MI
+  program/transaction, HTTP status, per-attempt voucher, M3 message, and the
+  parameters actually sent.
+
+Both neutralise spreadsheet formula injection and mark truncation as a visible
+final row, since a browser download never surfaces a response header.
+
+Person and job are stored as **snapshots** on the posting, and the posting has
+no foreign key to `ExpenseSession`. A cascade would delete the record of a
+voucher that still exists in the ledger the moment someone tidied an expense.
+
+### Not yet decided
+
+`VoucherPoster` in `worker.ts` is an interface with no implementation. Which MI
+program accepts the voucher, and whether a custom deduplicating transaction can
+be built, are the open questions for the M3 team — guessing them would bake a
+wrong answer into the one path that must not be wrong.
+
 ## Known gaps before this can post
 
 1. **`Receipt` has no expense category.** Merchant name alone is too weak: a

@@ -230,3 +230,177 @@ model ScannedItem {
 
   createdAt DateTime @default(now())
 }
+
+// ---------------------------------------------------------------------------
+// M3 posting queue + audit trail
+// ---------------------------------------------------------------------------
+
+// One queued posting of an approved expense session into M3.
+//
+// The person-and-job fields are an immutable SNAPSHOT taken at enqueue time,
+// deliberately denormalised rather than joined. An audit trail exists to answer
+// "what did we send, and on whose behalf" months later; if it read through to
+// the live user and job rows, renaming a user or reassigning a job would
+// silently rewrite history.
+model M3Posting {
+  id String @id @default(cuid())
+
+  // Deliberately NOT a foreign key to ExpenseSession. A cascade from the
+  // session would delete the posting, its lines and its whole attempt history
+  // the moment someone tidied up an expense - destroying the record of a
+  // voucher that still exists in the ledger. The session id is kept as a
+  // snapshot, like every other reference here.
+  sessionId String @unique
+
+  // Deterministic and stable across every attempt, derived from sessionId.
+  // Written into an M3 external-reference field so that a post which timed out
+  // can be reconciled by searching M3 for this value instead of guessing.
+  reference String @unique
+
+  // pending  - queued, not yet sent
+  // posting  - a send is in flight (claimed)
+  // posted   - M3 confirmed, voucher number recorded
+  // rejected - M3 explicitly refused it (a definitive NOK); safe to fix + retry
+  // unknown  - sent, outcome indeterminate. NEVER auto-retried. Needs
+  //            reconciliation against `reference` in M3.
+  // blocked  - could not be built (no binding, no routing, closed period)
+  // reversed - previously posted, later reversed by a counter-voucher
+  status String @default("pending")
+
+  // Snapshot of the claimant and the job, for filtering and for history.
+  userId    String
+  userName  String
+  userEmail String
+  jobId     String?
+  jobNumber String?
+  jobName   String?
+  groupName String?
+
+  // Snapshot of the document as built.
+  cono              String
+  divi              String
+  currency          String
+  amountCents       Int
+  taxCents          Int     @default(0)
+  accountingDate    String  // YYYY-MM-DD
+  postingProfileKey String
+  documentType      String  // ap_invoice | gl_journal
+  supplierNo        String?
+
+  // Returned by M3 on success. The trio a finance user needs to find it.
+  voucherNo     String?
+  voucherSeries String?
+  fiscalYear    String?
+
+  attempts      Int       @default(0)
+  lastError     String?
+  nextAttemptAt DateTime?
+  postedAt      DateTime?
+
+  // Set when a worker claims the row. A claim older than the lease means the
+  // worker died mid-send; the row is then moved to `unknown`, never back to
+  // `pending`, because a crash after dispatch is indistinguishable from a
+  // successful post we never heard about.
+  claimedAt DateTime?
+  // Fencing token minted at claim time. A worker must present it to open an
+  // attempt, so a process that resumes after its lease was revoked cannot
+  // dispatch against a posting somebody else now owns. A timestamp alone
+  // proves nothing about WHO holds the claim.
+  claimToken String?
+
+  lines      M3PostingLine[]
+  attemptLog M3PostingAttempt[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Queue drain.
+  @@index([status, nextAttemptAt])
+  // Audit filters: by individual, and by job.
+  @@index([userId, createdAt])
+  @@index([jobNumber, createdAt])
+  @@index([status, createdAt])
+}
+
+// One voucher line as it was sent: the resolved accounting string and amount.
+//
+// This is the row a finance user compares against M3 line by line, so it stores
+// what was ACTUALLY transmitted, not a recomputation. Re-running the routing
+// rules later could produce a different answer if the rules have since changed,
+// which is exactly what an audit must not do.
+model M3PostingLine {
+  id        String    @id @default(cuid())
+  postingId String
+  posting   M3Posting @relation(fields: [postingId], references: [id], onDelete: Cascade)
+
+  lineNo Int
+
+  // The M3 accounting string. dim1 is the GL account (AIT1).
+  dim1 String
+  dim2 String?
+  dim3 String?
+  dim4 String?
+  dim5 String?
+  dim6 String?
+  dim7 String?
+
+  amountCents Int
+  taxCents    Int     @default(0)
+  vatCode     String?
+  description String
+
+  // Traceability back into the app.
+  receiptId String?
+  // JSON array of the routing rule ids that produced this line, so a surprising
+  // account can be traced to the rule that chose it.
+  routedBy String?
+  // True when this line fell through to the suspense account.
+  viaSuspense Boolean @default(false)
+
+  @@unique([postingId, lineNo])
+}
+
+// Append-only record of every attempt against M3. Never updated after its
+// outcome is written, and never deleted.
+//
+// This is the heart of the reconciliation story: a posting row shows where
+// things ended up, but only the attempt log shows what was tried, when, by
+// whom, and what M3 said each time - including the ambiguous attempts that
+// leave no trace in M3 at all if they did not commit.
+model M3PostingAttempt {
+  id        String    @id @default(cuid())
+  postingId String
+  posting   M3Posting @relation(fields: [postingId], references: [id], onDelete: Cascade)
+
+  attemptNo Int
+
+  // in_flight - written BEFORE the call and updated after. An attempt left in
+  //             this state is a crashed worker, and is treated as ambiguous.
+  // posted | rejected | ambiguous | not_delivered | auth_error | blocked |
+  // reconciled_posted | reconciled_absent
+  outcome String @default("in_flight")
+
+  // What was called. Program/transaction are recorded per attempt because they
+  // are configuration and may differ between attempts.
+  program     String?
+  transaction String?
+  // JSON of the MI parameters sent. Business data only - never credentials.
+  requestParams String?
+
+  httpStatus Int?
+  m3Message  String?
+  voucherNo  String?
+  // True when we could not determine whether M3 applied the write.
+  ambiguous  Boolean @default(false)
+  durationMs Int?
+
+  // "system" for queue-driven attempts, else the userId that triggered it.
+  actor String @default("system")
+
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+
+  @@unique([postingId, attemptNo])
+  @@index([postingId, startedAt])
+  @@index([outcome, startedAt])
+}
