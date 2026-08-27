@@ -83,86 +83,234 @@ export type PartialAccountingString = z.infer<typeof PartialAccountingString>;
 // 1. Connection
 // ---------------------------------------------------------------------------
 
-// Fields lifted from a downloaded .ionapi file. On-prem Infor OS issues service
-// account keys (saak/sask) used with the OAuth2 password grant.
+// Shaped against a WORKING on-prem deployment (an existing internal M3 client,
+// which reads and writes a live grid), not the ION API multi-tenant gateway.
+// The difference is substantive: that setup calls m3api-rest directly on the
+// grid and takes its bearer token from Infor STS, so there is no tenant
+// segment, no /M3/m3api-rest/v2 path, and no tenantId anywhere.
 //
-// SECRETS ARE NOT STORED HERE. `secretRef` names an environment variable (or a
-// secret-manager key) holding the JSON blob of cs/saak/sask. The database keeps
-// only the non-sensitive half, so the admin console can render a connection
-// without ever shipping posting credentials to a browser.
+//   baseUrl   https://<grid-host>:7443/infor/M3/m3api-rest
+//   tokenUrl  https://<grid-host>:2443/InforIntSTS/connect/token
+//
+// Credentials map straight out of a backend-service .ionapi file:
+//   ci -> clientId, cs -> client secret, saak -> username, sask -> password,
+//   pu + ot -> tokenUrl.
+
+// Trailing slash is stripped so callers can concatenate paths the way the
+// reference client's rtrim() does. Userinfo, query and fragment are rejected:
+// none is meaningful on these endpoints, and credentials in a URL end up in
+// access logs.
 const HttpsUrl = z
   .string()
   .url()
-  .refine((u) => u.startsWith("https://"), "ION API endpoints must use https");
-
-export const M3ConnectionConfig = z
-  .object({
-    // From .ionapi: "iu" - ION API gateway base URL.
-    ionApiBaseUrl: HttpsUrl,
-    // From .ionapi: "pu" - portal/token base URL.
-    tokenBaseUrl: HttpsUrl,
-    // From .ionapi: "ot" - token endpoint path, appended to tokenBaseUrl.
-    tokenEndpoint: z.string().default("/as/token.oauth2"),
-    // From .ionapi: "ti" - tenant id. On-prem this is typically <TENANT>_<ENV>.
-    tenantId: z.string().min(1),
-    // From .ionapi: "ci" - client id. Not secret on its own.
-    clientId: z.string().min(1),
-
-    // Name of the env var holding {"cs":"...","saak":"...","sask":"..."}.
-    secretRef: z.string().min(1).default("M3_ION_SECRETS"),
-
-    // Which M3 instance this points at. Guards destructive posting - see `armed`.
-    environment: z.enum(["DEV", "TST", "PRD"]),
-
-    // Posting is refused unless BOTH dryRun is false AND armed is true. Two flags
-    // rather than one so that enabling the integration can never, by itself,
-    // start writing vouchers into a production ledger.
-    dryRun: z.boolean().default(true),
-    armed: z.boolean().default(false),
-
-    // An `environment` label is just a string an admin typed, so it cannot be
-    // trusted to keep a "DEV" config off the production ledger. Deployment
-    // supplies the real allowlist out of band (env var, not the admin UI); a
-    // PRD-labelled connection must match it, and a non-PRD one must not.
-    prodHostAllowlist: z.array(z.string().min(1)).default([]),
-
-    requestTimeoutMs: z.number().int().min(1000).max(120_000).default(30_000),
-
-    // Retries apply to reads and token fetches ONLY. Writes are never retried
-    // from here: they go through the posting queue, which holds a durable
-    // idempotency key per session and reconciles against M3 before any second
-    // attempt. A naive retry on a timed-out voucher post duplicates the voucher.
-    readMaxRetries: z.number().int().min(0).max(5).default(2),
-  })
-  .superRefine((c, ctx) => {
-    let host: string;
+  .superRefine((u, ctx) => {
+    let parsed: URL;
     try {
-      host = new URL(c.ionApiBaseUrl).host;
+      parsed = new URL(u);
     } catch {
       return; // .url() already reported this
     }
-    const listed = c.prodHostAllowlist.includes(host);
-    // Deliberately strict: an empty allowlist fails a PRD config rather than
-    // waving it through. A guard that switches itself off when unconfigured is
-    // exactly the guard that is missing on the day it is needed.
-    if (c.environment === "PRD" && !listed) {
+    if (parsed.protocol !== "https:") {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "M3 endpoints must use https" });
+    }
+    if (parsed.username || parsed.password) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Credentials must not appear in the URL" });
+    }
+    if (parsed.search || parsed.hash) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Query string and fragment are not allowed here" });
+    }
+  })
+  .transform((u) => u.replace(/\/+$/, ""));
+
+// The secret blob behind `secretRef`. Never persisted by this app - parsed
+// straight out of the environment at call time. Shapes differ by auth mode,
+// so the resolver validates against the matching branch.
+export const M3Secrets = z.discriminatedUnion("authMode", [
+  z.object({
+    authMode: z.literal("oauth_password"),
+    cs: z.string().min(1),   // .ionapi client secret
+    saak: z.string().min(1), // service account access key -> username
+    sask: z.string().min(1), // service account secret key -> password
+  }),
+  z.object({
+    authMode: z.literal("basic"),
+    username: z.string().min(1),
+    password: z.string().min(1),
+  }),
+]);
+export type M3Secrets = z.infer<typeof M3Secrets>;
+
+// Records a single MI list call may return. MUST be positive: in m3api-rest 0
+// (or negative) means "unbounded", which makes the grid materialise a whole
+// result set in one transaction - a documented cause of M3 memory spikes on
+// this grid family. The grid also enforces its own per-call ceiling (1000
+// observed) with no offset to page past it, so bulk reads must be partitioned
+// by key rather than paged, and a result of exactly maxrecs must be treated as
+// possibly truncated rather than complete.
+const MAXRECS_DEFAULT = 1000;
+
+const ConnectionBase = {
+  // m3api-rest root, including the /infor/M3 prefix this grid family uses.
+  baseUrl: HttpsUrl,
+
+  // Name of the env var holding the M3Secrets JSON blob.
+  secretRef: z.string().min(1).default("M3_ION_SECRETS"),
+
+  // Which M3 instance this points at. Guards posting - see `armed`.
+  environment: z.enum(["DEV", "TST", "PRD"]),
+
+  // Posting is refused unless BOTH dryRun is false AND armed is true. Two
+  // flags rather than one so that enabling the integration can never, by
+  // itself, start writing vouchers into a production ledger.
+  dryRun: z.boolean().default(true),
+  armed: z.boolean().default(false),
+
+  // Company injected into every MI call when a caller does not supply one,
+  // mirroring the reference client's m3.cono. Blank means "use the service
+  // account's default company". Company bindings remain authoritative for
+  // routing; this is only the transport-level fallback.
+  defaultCono: z.string().regex(/^\d{1,3}$/).optional(),
+
+  // Test grids commonly run on self-signed certificates. Allowed there,
+  // never in production - see the refinement below.
+  verifyTls: z.boolean().default(true),
+
+  maxrecs: z.number().int().min(1).max(10_000).default(MAXRECS_DEFAULT),
+
+  requestTimeoutMs: z.number().int().min(1000).max(120_000).default(30_000),
+  connectTimeoutMs: z.number().int().min(1000).max(60_000).default(10_000),
+
+  // Retries apply to reads and token fetches ONLY. Writes are never retried
+  // from here - see the idempotency note in docs/M3_ION_INTEGRATION.md. A
+  // blind retry on a timed-out voucher post can duplicate the voucher, and
+  // unlike PPS001MI/ConfirmLine (which SETS a date and is naturally
+  // repeatable), a GL post APPENDS and is not.
+  readMaxRetries: z.number().int().min(0).max(5).default(2),
+};
+
+// Discriminated on authMode so that tokenUrl and clientId are required at the
+// TYPE level for OAuth, not merely checked at runtime. Consumers then never
+// have to narrow an optional that validation has already guaranteed.
+const OAuthConnection = z
+  .object({
+    ...ConnectionBase,
+    // Production shape: OAuth2 password grant against Infor STS carrying
+    // client_id/client_secret plus the saak/sask pair, then m3api-rest with
+    // "Authorization: Bearer".
+    authMode: z.literal("oauth_password"),
+    tokenUrl: HttpsUrl,          // .ionapi pu + ot
+    clientId: z.string().min(1), // .ionapi ci
+  })
+  .strict();
+
+const BasicConnection = z
+  .object({
+    ...ConnectionBase,
+    // Plain HTTP basic straight at m3api-rest. Local/simple grids only.
+    authMode: z.literal("basic"),
+  })
+  .strict();
+
+export const M3ConnectionConfig = z
+  .discriminatedUnion("authMode", [OAuthConnection, BasicConnection])
+  .superRefine((c, ctx) => {
+    if (c.environment !== "PRD") return;
+    if (c.authMode !== "oauth_password") {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ["ionApiBaseUrl"],
-        message: c.prodHostAllowlist.length === 0
-          ? "A PRD connection requires prodHostAllowlist to be configured at deploy time"
-          : `Host ${host} is not in the production allowlist`,
+        path: ["authMode"],
+        message: "Production must use oauth_password, not basic auth",
       });
     }
-    if (c.environment !== "PRD" && listed) {
+    if (!c.verifyTls) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ["environment"],
-        message: `Host ${host} is a production host but this connection is labelled ${c.environment}`,
+        path: ["verifyTls"],
+        message: "TLS verification cannot be disabled against production",
       });
     }
   });
 export type M3ConnectionConfig = z.infer<typeof M3ConnectionConfig>;
+
+/**
+ * Check a parsed connection against the deployment's production host
+ * allowlist.
+ *
+ * This is deliberately NOT a field on the schema. An `environment` label is a
+ * string an admin typed, and an allowlist an admin can edit alongside the
+ * baseUrl attests nothing. The allowlist must arrive from trusted deployment
+ * configuration (an env var read server-side), so the admin console can never
+ * widen its own guard rails.
+ *
+ * Entries are compared against URL.host, so they must include the port where
+ * one is used - e.g. "m3-grid-prod.example.com:7443".
+ *
+ * Returns [] when the connection is acceptable, else the reasons it is not.
+ */
+export function checkProductionHost(
+  config: M3ConnectionConfig,
+  prodHostAllowlist: readonly string[],
+): string[] {
+  let host: string;
+  try {
+    host = new URL(config.baseUrl).host;
+  } catch {
+    return ["baseUrl is not a valid URL"];
+  }
+
+  const listed = prodHostAllowlist.includes(host);
+  const problems: string[] = [];
+
+  // Deliberately strict: an empty allowlist fails a PRD config rather than
+  // waving it through. A guard that switches itself off when unconfigured is
+  // exactly the guard that is missing on the day it is needed.
+  if (config.environment === "PRD" && !listed) {
+    problems.push(
+      prodHostAllowlist.length === 0
+        ? "A PRD connection requires a deploy-time production host allowlist"
+        : `Host ${host} is not in the production allowlist`,
+    );
+  }
+  if (config.environment !== "PRD" && listed) {
+    problems.push(
+      `Host ${host} is a production host but this connection is labelled ${config.environment}`,
+    );
+  }
+  return problems;
+}
+
+/**
+ * The one entry point for turning stored JSON into a usable connection.
+ *
+ * Parsing and the production-host check are deliberately fused: splitting them
+ * left a guard a caller could simply forget, which is the same failure mode as
+ * not having the guard at all. Nothing else should call
+ * `M3ConnectionConfig.parse` directly.
+ *
+ * `prodHostAllowlist` must come from deployment configuration read server-side,
+ * never from the admin console.
+ */
+export function parseConnection(
+  raw: unknown,
+  prodHostAllowlist: readonly string[],
+): { ok: true; config: M3ConnectionConfig } | { ok: false; errors: string[] } {
+  const parsed = M3ConnectionConfig.safeParse(raw);
+  if (!parsed.success) {
+    return {
+      ok: false,
+      errors: parsed.error.issues.map((i) =>
+        i.path.length ? `${i.path.join(".")}: ${i.message}` : i.message,
+      ),
+    };
+  }
+
+  const hostProblems = checkProductionHost(parsed.data, prodHostAllowlist);
+  if (hostProblems.length > 0) {
+    return { ok: false, errors: hostProblems };
+  }
+
+  return { ok: true, config: parsed.data };
+}
 
 // ---------------------------------------------------------------------------
 // 2. Company binding

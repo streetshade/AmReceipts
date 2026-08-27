@@ -26,25 +26,44 @@ GL rule, and re-mapping the chart of accounts doesn't touch payment handling.
 
 ## Layer 1 — Connection (`M3ConnectionConfig`)
 
-Fields lifted from a downloaded `.ionapi` file: gateway URL (`iu`), token URL
-(`pu`/`ot`), tenant (`ti`), client id (`ci`).
+**Corrected against a working client.** An existing internal M3 integration reads and writes a
+live grid in this estate, and it does *not* go through the ION API multi-tenant
+gateway. It calls `m3api-rest` directly on the grid and takes a bearer token
+from Infor STS. There is no tenant segment, no `/M3/m3api-rest/v2` path, and no
+tenant id anywhere:
 
-Three deliberate choices:
+```
+baseUrl   https://<grid-host>:7443/infor/M3/m3api-rest
+tokenUrl  https://<grid-host>:2443/InforIntSTS/connect/token
+```
 
-- **Secrets are not in the database.** The existing `Integration.config` column
-  stores a JSON blob that the admin API reads straight back to the browser
-  (`src/app/api/admin/integrations/[key]/route.ts:30`). That is survivable for a
-  stub; it is not survivable for a service account with ledger write access.
-  `secretRef` names an env var holding `cs`/`saak`/`sask` instead.
-- **Two flags to post, not one.** `dryRun: true` and `armed: false` by default.
-  Enabling the integration can never by itself start writing vouchers.
-- **The environment label is not trusted.** `prodHostAllowlist` comes from
-  deployment, not the admin UI. A PRD-labelled config whose host isn't on it
-  fails validation — and so does a DEV-labelled config pointing at a PRD host.
+Credentials map straight out of a backend-service `.ionapi` file:
+`ci` → clientId, `cs` → client secret, `saak` → username, `sask` → password,
+`pu` + `ot` → tokenUrl. The grant is OAuth2 **password**, form-encoded in the
+POST body.
 
-Retries are read-only. Writes go through the posting queue, which holds a
-durable idempotency key per session; a blind retry on a timed-out voucher post
-duplicates the voucher.
+Design choices:
+
+- **Discriminated on `authMode`.** `oauth_password` requires `tokenUrl` and
+  `clientId` at the type level; `basic` (test grids only) forbids them.
+- **Secrets are not in the database.** `secretRef` names an env var holding an
+  `M3Secrets` blob. The existing `Integration.config` column reads straight back
+  to the browser (`src/app/api/admin/integrations/[key]/route.ts:30`) — fine for
+  the PSA Web stub, not for a service account with ledger write access.
+- **Two flags to post**, `dryRun: false` *and* `armed: true`.
+- **Production hardening**: PRD must use `oauth_password` and may not disable
+  TLS verification. Test grids run on self-signed certs, so `verifyTls: false`
+  stays available below PRD.
+- **The host allowlist is not a schema field.** It arrives from deployment and
+  is checked by `checkProductionHost(config, allowlist)`. An allowlist an admin
+  can edit next to the `baseUrl` attests nothing. Entries compare against
+  `URL.host`, so they must include the port.
+- **`maxrecs` must be positive.** In `m3api-rest` a `0` means *unbounded*, which
+  makes the grid materialise an entire result set in one transaction — a
+  documented cause of M3 memory spikes on this grid family. The grid also
+  enforces its own ceiling (1000 observed) with **no offset to page past it**,
+  so bulk reads partition by key, and a result of exactly `maxrecs` must be
+  treated as possibly truncated.
 
 ## Layer 2 — Binding (`M3CompanyBinding`, `M3EmployeeBinding`)
 
@@ -111,41 +130,102 @@ for teams who prefer flow over strictness.
 `RoutingResult` is a discriminated union on `status` — a caller cannot read
 `.accounting` without first handling the blocked case.
 
+## The hard part: idempotent GL posting
+
+The reference client offers **no reusable idempotency pattern**, and that is not
+an oversight — its only write is `PPS001MI/ConfirmLine`, which *sets* a delivery
+date. Running it twice is harmless. A GL voucher *appends*; running it twice
+creates two vouchers. So this problem has to be solved from scratch here, and it
+is the riskiest part of the integration.
+
+`m3api-rest` provides no HTTP idempotency-key guarantee, and the fact that its
+mutating calls are exposed as `GET` does **not** make them repeatable.
+
+Strategy, weakest to strongest:
+
+1. **Deterministic reference in a searchable M3 field.** Derive a stable UUID
+   from the session id and carry it in an external-document/reference field on
+   the voucher.
+2. **Query before any repost.** After a timeout, never retry blind: search M3
+   for that reference and confirm company, division, year, voucher, amount,
+   currency and line count before deciding.
+3. **`UNKNOWN` is a terminal state, not a retryable one.** Absence of the
+   reference immediately after a timeout is *not* proof the post didn't commit.
+   An inconclusive reconciliation goes to manual review.
+4. **Strongest: M3-side deduplication.** A custom MI transaction that accepts
+   the UUID, records it in a uniquely-keyed table, and creates the voucher in
+   the *same* M3 transaction — returning the existing voucher identity on
+   repeat. Worth asking the M3 team for; nothing application-side is as safe.
+
+## Operational behaviour to carry over
+
+The reference client earned these the hard way; a TypeScript client that skips
+them will behave differently from the proven one:
+
+- `maxrecs` is sent **twice**: as the matrix parameter `;maxrecs=N` after the
+  transaction segment *and* in the query string. Their grid ignores the
+  query-string spelling and silently falls back to a default cap of 100 without
+  the matrix form.
+- One forced token refresh and one retry on `401`/`403`, then fail.
+- Token cached to disk with a 60-second expiry margin, written `0600` via
+  temp-file + rename. (No refresh locking — a thundering-herd guard is worth
+  adding here.)
+- Never follow redirects; a redirect could leak the bearer token to another host.
+- Errors arrive in two shapes: `{"@type":"NOK","Message":...}` and
+  `{"ErrorMessage":...}` — plus any HTTP ≥ 400. Normalise all three.
+- Blank MI parameters are omitted so M3 applies its own defaults.
+- Records come back as `MIRecord[].NameValue[]` `Name`/`Value` pairs; flatten.
+- Whitelist `[A-Za-z0-9_]` on program and transaction names.
+
+## Discovering the real MI names
+
+My earlier note said "verify MI program names against your installation" without
+saying how. The reference client answers it: **`MRS001MI/LstTransactions`**
+(with `MINM=<PROGRAM>`) lists the transactions a program actually exposes on
+*this* grid, and **`MRS001MI/LstFields`** lists their field names. There is also
+a REST `{baseUrl}/metadata/{PROGRAM}` resource as a fallback, though not every
+grid routes it. `scripts/probe_api.php` in that repo is a working example.
+
+This closes the master-data gap properly: the admin console can validate every
+routing rule against what the grid really offers, rather than against a guess.
+
 ## Known gaps before this can post
 
 1. **`Receipt` has no expense category.** Merchant name alone is too weak: a
    supermarket receipt may be catering, materials or welfare. Needs a new field,
-   inferred at OCR time with user override. This is the single biggest accuracy
-   lever in the whole design.
-2. **Master-data cache + validation.** Pull valid accounting identities and
-   per-dimension rules from M3, cache them, and validate every rule against the
-   cache in the admin console — so a typo'd account fails when it is typed, not
-   at 02:00 in a batch.
+   inferred at OCR time with user override. Biggest accuracy lever in the design.
+2. **Master-data cache + validation** — via `MRS001MI` as above.
 3. **Posting queue + `M3Posting` table.** One row per session, unique on
-   `sessionId`, holding status, idempotency key, returned voucher number, error
-   and attempt count. Mirrors the existing `PendingLookup` pattern.
-4. **Reversals.** Un-approving a posted session must raise a reversal voucher,
-   never delete.
-5. **Period/balance checks.** Posting date, open period, and balanced debit and
-   credit validated before the call, not after the rejection.
+   `sessionId`, holding status (including `UNKNOWN`), the deterministic
+   reference, returned voucher number, error and attempt count.
+4. **Reversals.** Un-approving a posted session raises a reversal voucher,
+   never a delete.
+5. **Period/balance checks** before the call, not after the rejection.
 
-## Verify against your installation
+## Still to confirm with the M3 team
 
-MI program names, FAM functions (`AP10`/`GL10`), voucher series, VAT codes and
-dimension lengths are **installation-specific**. Confirm them in the M3 API
-Repository for the target company/division before wiring the client. Nothing in
-this schema hardcodes them; they are all configuration.
+- Which MI program actually accepts the voucher on this grid, and whether it
+  exposes a field that can carry a unique external reference.
+- Whether a custom dedup MI transaction is acceptable to build.
+- FAM functions, voucher series, VAT codes and dimension lengths for the target
+  company/division. Nothing in the schema hardcodes these.
+- Whether employee reimbursement should go through AP at all, or through payroll.
 
 ## Review trail
 
-`src/lib/m3/config.ts` was reviewed twice by Codex (`codex exec`). Findings
-folded in: no-idempotency-on-retry, untyped rule conditions, non-deterministic
-precedence ties, ambiguous bindings, over-permissive suspense fallback,
-incomplete profile refinements, empty-string dimension values, unvalidated
-templates, declarative-only PRD arming, and missing currency/period on the
-result. A `ZodEffects`-in-`discriminatedUnion` construction bug was caught
-separately and confirmed fixed on the second pass.
+`src/lib/m3/config.ts` was reviewed three times by Codex (`codex exec`), the
+third time with that internal M3 client on hand for comparison.
+Findings folded in across those passes: no-idempotency-on-retry, untyped rule
+conditions, non-deterministic precedence ties, ambiguous bindings,
+over-permissive suspense fallback, incomplete profile refinements, empty-string
+dimension values, unvalidated templates, declarative-only PRD arming, missing
+currency/period on the result, a missing `defaultCono`, an implicit secret
+contract, a runtime-only OAuth field contract (now discriminated), and a host
+allowlist that was not genuinely out of band. A `ZodEffects`-in-
+`discriminatedUnion` construction bug was caught outside Codex and confirmed
+fixed on the second pass.
 
 **Not typechecked:** this sandbox has no Node toolchain and no `node_modules`,
-so `tsc` has not been run against the file. Codex reviewed it as a substitute.
-Run `npm install && npx tsc --noEmit` before relying on it.
+so `tsc` has never been run against the file. Codex reviewed it as a substitute
+and judged it compile-clean. Run `npm install && npx tsc --noEmit` before
+relying on it.
