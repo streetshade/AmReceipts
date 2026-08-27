@@ -312,6 +312,51 @@ program accepts the voucher, and whether a custom deduplicating transaction can
 be built, are the open questions for the M3 team — guessing them would bake a
 wrong answer into the one path that must not be wrong.
 
+## The resolver
+
+`routing.ts` is a pure function — no I/O, no clock. Routing decisions have to be
+explainable months later, and a function whose output depends only on its
+arguments can be replayed exactly as it ran.
+
+- Rules ordered by `(precedence, id)`; id breaks ties so the outcome never
+  depends on array or row order.
+- Each matching rule merges a **partial** accounting string; first-write-wins
+  **per dimension**, so a narrow rule and a broad one compose.
+- A rule whose `{{token}}` has no value behind it contributes **nothing at all**
+  — never a half-applied string. Tokens resolving to blank count as unresolved.
+- The trace records rules that matched but could not resolve, so "did not apply"
+  is distinguishable from "should have applied and couldn't".
+
+**`matches` is bounded, not safe.** JavaScript offers no regex step budget, so a
+pathological pattern can still be slow; the 120-character subject cap is what
+keeps it survivable. `contains` / `starts_with` / `in` cover nearly every real
+rule and cannot backtrack — prefer them.
+
+## The builder
+
+`build.ts` turns an approved session into a `PreparedPosting`. Money handling is
+the part worth reviewing:
+
+- **Receipt tax is apportioned pro-rata** across lines by the largest-remainder
+  method, summing exactly to the receipt's tax. OCR gives one tax figure per
+  receipt; dropping it would understate reclaimable VAT on every itemised
+  receipt, and putting it all on one line would misstate that line.
+- **Nothing is silently dropped.** Amounts the line items don't account for post
+  as an "Unitemised balance"; a negative remainder is a "Discount / adjustment".
+  A stated total ≤ 0 against positive lines is bad data and **blocks**.
+- **Lines are grouped by accounting string**, keyed on JSON (dimension values
+  may legally contain a separator) and including `viaSuspense`, so a flagged
+  fallback line is never absorbed into a properly routed one.
+- **Conflicting posting profiles block.** A session mixing company-card and
+  personal spend needs two different documents with different credit sides, and
+  one posting cannot be both. Guessing would reimburse an employee for spend
+  already paid by the company. Unregistered company cards are warned about,
+  since an unrecognised card is treated as personal and reimbursed.
+
+`Receipt.expenseCategory` is now in the schema — the accuracy lever flagged
+earlier. Populating it from OCR with user override is still to do; routing falls
+through to broader rules while it is null.
+
 ## Known gaps before this can post
 
 1. **`Receipt` has no expense category.** Merchant name alone is too weak: a

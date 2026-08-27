@@ -24,6 +24,12 @@ model User {
   company String?
   title   String?
 
+  // M3 identity for reimbursement. A supplier number pays through AP; an
+  // employee number pays through payroll. Real columns rather than entries in
+  // a config blob: these are per-person data that admins edit individually.
+  m3SupplierNo String?
+  m3EmployeeNo String?
+
   // Group membership (basic users belong to a group overseen by an approver).
   groupId String?
   group   Group?  @relation("GroupMembers", fields: [groupId], references: [id], onDelete: SetNull)
@@ -154,6 +160,13 @@ model Receipt {
   paymentMethod   PaymentMethod? @relation(fields: [paymentMethodId], references: [id], onDelete: SetNull)
   // Raw method string read from the receipt before reconciliation, e.g. "VISA ****1234"
   paymentRaw      String?
+
+  // What this spend was FOR: meals, fuel, accommodation, materials, ...
+  // Merchant name alone is too weak a routing signal - a supermarket receipt
+  // may be catering, materials or welfare - so GL routing leans on this.
+  // Nullable: inferred at OCR time where possible, user-correctable, and
+  // routing falls through to broader rules when it is absent.
+  expenseCategory String?
 
   // "pending" (awaiting OCR) | "processed" | "verified" (user confirmed) | "failed"
   status  String  @default("pending")

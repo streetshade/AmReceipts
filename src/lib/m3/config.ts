@@ -495,9 +495,10 @@ export type RuleFact =
   | z.infer<typeof NumberFact>
   | z.infer<typeof BooleanFact>;
 
-// `matches` is evaluated with a length and step budget by the resolver; the
-// admin console is the only writer, but a catastrophically backtracking pattern
-// should degrade to "no match", not stall the posting queue.
+// `matches` is anchored and length-bounded by the resolver. There is NO step
+// budget - JavaScript offers none - so a pathological pattern can still be slow;
+// the subject cap is what keeps it survivable. Prefer contains/starts_with/in,
+// which cover nearly every real rule and cannot backtrack at all.
 export const RuleCondition = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("string"),
@@ -620,6 +621,9 @@ export const RoutingResult = z.discriminatedUnion("status", [
         ruleId: z.string(),
         ruleName: z.string(),
         applied: z.array(z.enum(DIMENSION_IDS)),
+        // Zod strips unknown keys, so the resolver's skip marker has to be
+        // declared here or it is silently lost on the way through.
+        skipped: z.literal("unresolved_token").optional(),
       }),
     ),
   }),
@@ -641,8 +645,78 @@ export const RoutingResult = z.discriminatedUnion("status", [
         ruleId: z.string(),
         ruleName: z.string(),
         applied: z.array(z.enum(DIMENSION_IDS)),
+        // Zod strips unknown keys, so the resolver's skip marker has to be
+        // declared here or it is silently lost on the way through.
+        skipped: z.literal("unresolved_token").optional(),
       }),
     ),
   }),
 ]);
 export type RoutingResult = z.infer<typeof RoutingResult>;
+
+// ---------------------------------------------------------------------------
+// The business configuration as a whole
+// ---------------------------------------------------------------------------
+
+/**
+ * A company card, matched against PaymentMethod's brand and last4.
+ *
+ * Spend on one of these is already paid: the liability sits on a card clearing
+ * account, so it belongs in a journal, not an AP reimbursement. Everything else
+ * is money an employee is owed.
+ */
+export const CompanyCard = z.object({
+  brand: z.string().min(1),
+  last4: z.string().regex(/^\d{4}$/),
+  /** Posting profile to use for this card, overriding the default. */
+  postingProfileKey: z.string().min(1).optional(),
+});
+export type CompanyCard = z.infer<typeof CompanyCard>;
+
+export const M3BusinessConfig = z
+  .object({
+    companyBindings: z.array(M3CompanyBinding).default([]),
+    postingProfiles: z.array(M3PostingProfile).default([]),
+    routingRules: z.array(GlRoutingRule).default([]),
+    companyCards: z.array(CompanyCard).default([]),
+
+    /** Profile used when nothing else selects one. Usually the reimbursement one. */
+    defaultProfileKey: z.string().min(1),
+    /** Profile for spend on a registered company card. */
+    companyCardProfileKey: z.string().min(1).optional(),
+  })
+  .superRefine((cfg, ctx) => {
+    const keys = new Set(cfg.postingProfiles.map((p) => p.key));
+
+    // A dangling profile key fails at posting time otherwise - after approval,
+    // in a batch, where it reads as an outage rather than a typo.
+    const check = (key: string | undefined, path: (string | number)[]) => {
+      if (key && !keys.has(key)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path, message: `Unknown posting profile "${key}"` });
+      }
+    };
+    check(cfg.defaultProfileKey, ["defaultProfileKey"]);
+    check(cfg.companyCardProfileKey, ["companyCardProfileKey"]);
+    cfg.companyCards.forEach((c, i) => check(c.postingProfileKey, ["companyCards", i, "postingProfileKey"]));
+    cfg.routingRules.forEach((r, i) => check(r.postingProfileKey, ["routingRules", i, "postingProfileKey"]));
+
+    if (cfg.postingProfiles.length !== keys.size) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["postingProfiles"],
+        message: "Posting profile keys must be unique",
+      });
+    }
+
+    const ruleIds = new Set(cfg.routingRules.map((r) => r.id));
+    if (cfg.routingRules.length !== ruleIds.size) {
+      // Ids break precedence ties, so duplicates would make ordering - and
+      // therefore the resolved account - non-deterministic.
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["routingRules"],
+        message: "Routing rule ids must be unique",
+      });
+    }
+  });
+export type M3BusinessConfig = z.infer<typeof M3BusinessConfig>;
