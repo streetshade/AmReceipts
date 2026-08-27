@@ -89,7 +89,7 @@ export function buildAuditCsv(rows: AuditRow[], truncated = false): string {
 // lines and attempts, and crossing them would multiply rows into nonsense.
 const ATTEMPT_HEADERS = [
   "Reference", "Posting status", "Claimant", "Job number",
-  "Attempt", "Outcome", "Ambiguous", "Started", "Finished", "Duration (ms)",
+  "Attempt", "Outcome", "Ambiguous", "Committing call", "Started", "Finished", "Duration (ms)",
   "Actor", "Program", "Transaction", "HTTP", "Voucher returned", "M3 message",
   "Request parameters",
 ];
@@ -106,7 +106,7 @@ export function buildAttemptsCsv(rows: AuditRow[], truncated = false): string {
     for (const a of r.attemptLog) {
       out.push(row([
         r.reference, r.status, r.user.name, r.job.number ?? "",
-        a.attemptNo, a.outcome, a.ambiguous ? "yes" : "",
+        a.attemptNo, a.outcome, a.ambiguous ? "yes" : "", a.commits ? "yes" : "",
         a.startedAt, a.finishedAt ?? "", a.durationMs ?? "",
         a.actor, a.program ?? "", a.transaction ?? "", a.httpStatus ?? "",
         a.voucherNo ?? "", a.m3Message ?? "",

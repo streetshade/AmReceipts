@@ -194,7 +194,7 @@ export async function claimNextPosting(now: Date = new Date()) {
 
   const claimed = await prisma.m3Posting.updateMany({
     where: { id: candidate.id, status: "pending" },
-    data: { status: "posting", claimedAt: now, claimToken },
+    data: { status: "posting", claimedAt: now, claimToken, tries: { increment: 1 } },
   });
   if (claimed.count === 0) return null;
 
@@ -206,7 +206,7 @@ export async function claimNextPosting(now: Date = new Date()) {
 }
 
 /** Status the posting lands in for a given attempt outcome. */
-function statusForOutcome(outcome: AttemptOutcome, attempts: number, maxAttempts: number): PostingStatus {
+function statusForOutcome(outcome: AttemptOutcome, tries: number, maxAttempts: number): PostingStatus {
   switch (outcome) {
     case "posted":
     case "reconciled_posted":
@@ -221,7 +221,7 @@ function statusForOutcome(outcome: AttemptOutcome, attempts: number, maxAttempts
     case "not_delivered":
     case "auth_error":
     case "reconciled_absent":
-      return attempts >= maxAttempts ? "blocked" : "pending";
+      return tries >= maxAttempts ? "blocked" : "pending";
     case "in_flight":
       // A still-running attempt must leave the posting claimed.
       return "posting";
@@ -238,6 +238,12 @@ export interface AttemptStart {
   /** Statuses the posting may legitimately be in. Guards against a stale
    *  worker attempting against a posting somebody else has already settled. */
   allowedStatuses?: PostingStatus[];
+  /**
+   * True for the single call in a sequence that actually commits the voucher.
+   * Recorded on the attempt so that a late reply can be judged on what it was
+   * doing, not merely on whether it succeeded.
+   */
+  commits?: boolean;
   /**
    * The token returned by claimNextPosting. MANDATORY whenever "posting" is an
    * allowed status: checking the status alone would let two workers that each
@@ -289,7 +295,10 @@ export async function beginAttempt(postingId: string, start: AttemptStart = {}) 
         status: { in: allowed },
         ...(needToken ? { claimToken: start.claimToken } : {}),
       },
-      data: { attempts: { increment: 1 } },
+      // Renewing the lease here is what makes a long multi-line sequence safe:
+      // without it a healthy send of a twenty-line voucher could outlive its
+      // lease and be recovered as `unknown` while still making progress.
+      data: { attempts: { increment: 1 }, claimedAt: new Date() },
     });
 
     if (guarded.count === 0) {
@@ -318,6 +327,7 @@ export async function beginAttempt(postingId: string, start: AttemptStart = {}) 
         transaction: start.transaction ?? null,
         requestParams: start.requestParams ? JSON.stringify(start.requestParams) : null,
         actor: start.actor ?? "system",
+        commits: start.commits ?? false,
         ambiguous: false,
       },
     });
@@ -341,7 +351,20 @@ export async function completeAttempt(
     maxAttempts = 5,
     backoffMs = 60_000,
     expectStatuses = ["posting"] as PostingStatus[],
-  }: { maxAttempts?: number; backoffMs?: number; expectStatuses?: PostingStatus[] } = {},
+    settle = true,
+  }: {
+    maxAttempts?: number;
+    backoffMs?: number;
+    expectStatuses?: PostingStatus[];
+    /**
+     * False for an intermediate step of a multi-call voucher (header, lines).
+     * A successful step records its attempt but must leave the posting claimed
+     * and its token intact - marking it `posted` before the confirm call would
+     * report a voucher that does not exist yet. A FAILING step always settles,
+     * whatever this says: there is nothing left to continue.
+     */
+    settle?: boolean;
+  } = {},
 ) {
   return prisma.$transaction(async (tx) => {
     const attempt = await tx.m3PostingAttempt.findUnique({ where: { id: attemptId } });
@@ -370,6 +393,7 @@ export async function completeAttempt(
           program: attempt.program,
           transaction: attempt.transaction,
           requestParams: attempt.requestParams,
+          commits: attempt.commits,
           httpStatus: result.httpStatus ?? null,
           m3Message: `[late report; lease had expired] ${result.m3Message ?? ""}`.trim(),
           voucherNo: result.voucherNo ?? null,
@@ -381,9 +405,11 @@ export async function completeAttempt(
         },
       });
 
-      // A late confirmation is allowed to resolve an unknown - and only that.
-      // It must never move a posting that somebody has since settled.
-      if (result.outcome === "posted") {
+      // A late confirmation may resolve an unknown - but only if it was the
+      // call that actually commits. A head or line reply arriving late means a
+      // batch was staged, not that a voucher exists; promoting on it would
+      // report a posting that was never confirmed.
+      if (result.outcome === "posted" && attempt.commits) {
         const resolved = await tx.m3Posting.updateMany({
           where: { id: posting.id, status: "unknown" },
           data: {
@@ -416,8 +442,37 @@ export async function completeAttempt(
     }
 
     const ambiguous = result.outcome === "ambiguous";
-    const status = statusForOutcome(result.outcome, attempt.attemptNo, maxAttempts);
+
+    // Only the committing call may declare a voucher posted. The worker already
+    // marks its final step as committing, but relying on that would leave the
+    // invariant living in the caller: any future caller could settle a staged
+    // header as `posted` and report a voucher that does not exist.
+    if (settle && result.outcome === "posted" && !attempt.commits) {
+      throw new PostingError(
+        `Attempt ${attemptId} did not commit the voucher and cannot settle the posting as posted`,
+      );
+    }
+
+    const status = statusForOutcome(result.outcome, posting.tries, maxAttempts);
     const posted = status === "posted";
+
+    // An intermediate step that succeeded: log it and hand the claim back to
+    // the caller for the next call in the sequence.
+    if (!settle && result.outcome === "posted") {
+      await tx.m3PostingAttempt.update({
+        where: { id: attemptId },
+        data: {
+          outcome: result.outcome,
+          httpStatus: result.httpStatus ?? null,
+          m3Message: result.m3Message ?? null,
+          voucherNo: result.voucherNo ?? null,
+          ambiguous: false,
+          durationMs: Date.now() - attempt.startedAt.getTime(),
+          finishedAt: new Date(),
+        },
+      });
+      return { settled: false, status: "posting" as PostingStatus, attemptNo: attempt.attemptNo, late: false };
+    }
 
     // CAS the posting FIRST. If we lost it, the attempt is still recorded, but
     // annotated as not having settled anything - writing the outcome first
@@ -434,7 +489,7 @@ export async function completeAttempt(
         // cannot accidentally resurrect a posting that may have committed.
         nextAttemptAt:
           status === "pending" && RETRYABLE.has(result.outcome)
-            ? new Date(Date.now() + backoffMs * 2 ** (attempt.attemptNo - 1))
+            ? new Date(Date.now() + backoffMs * 2 ** Math.max(posting.tries - 1, 0))
             : null,
         postedAt: posted ? (posting.postedAt ?? new Date()) : posting.postedAt,
         voucherNo: result.voucherNo ?? posting.voucherNo,

@@ -1,9 +1,13 @@
-// Drives the posting queue: claim -> open attempt -> call M3 -> close attempt.
+// Drives the posting queue: claim -> step through the MI sequence -> settle.
 //
-// The ordering here is the safety property, not an implementation detail. The
-// attempt is opened BEFORE the call and the outcome written after, so a process
-// that dies mid-send leaves an `in_flight` attempt that recoverStalePostings
-// can find. Nothing in this file may reorder those steps.
+// Two orderings in here are safety properties rather than implementation
+// details, and neither may be rearranged:
+//
+//   1. Each attempt is opened BEFORE its call and closed after, so a process
+//      that dies mid-send leaves an `in_flight` attempt for recovery to find.
+//   2. Only the committing step may settle the posting as `posted`. The header
+//      and line calls stage a batch; reporting success before the confirm would
+//      claim a voucher that does not exist.
 
 import { M3Client, type MIResult } from "./client";
 import {
@@ -13,53 +17,51 @@ import {
   recoverStalePostings,
   type AttemptResult,
 } from "./posting";
+import {
+  buildSteps,
+  applyBatchId,
+  VoucherBuildError,
+  type VoucherPosterConfig,
+  type PostingStep,
+  type PostingDocument,
+} from "./voucherPoster";
 
-/** A posting as handed to the poster: the queue row plus its resolved lines. */
+/** A posting as handed back by the queue: the row plus its resolved lines. */
 export type ClaimedPosting = NonNullable<Awaited<ReturnType<typeof claimNextPosting>>>;
 
-/**
- * How a voucher is actually created in M3.
- *
- * Deliberately an interface. The MI program and transaction that accept a
- * voucher, and whether a custom deduplicating transaction is available, are
- * installation-specific and still open questions for the M3 team - see
- * docs/M3_ION_INTEGRATION.md. Guessing them here would bake a wrong answer
- * into the one code path that must not be wrong.
- */
-export interface VoucherPoster {
-  program: string;
-  transaction: string;
-  /** MI parameters for this posting, including the external reference. */
-  buildParams(posting: ClaimedPosting): Record<string, string>;
-  /** Pull the voucher identifiers out of a successful response. */
-  readVoucher(result: Extract<MIResult, { ok: true }>): {
-    voucherNo?: string;
-    voucherSeries?: string;
-    fiscalYear?: string;
-  };
+/** Read one named field out of the first record of a successful MI response. */
+function readField(result: Extract<MIResult, { ok: true }>, field: string | undefined): string | undefined {
+  if (!field) return undefined;
+  const value = result.records[0]?.[field];
+  return value === "" ? undefined : value;
 }
 
 /**
  * Map a client result onto a queue outcome.
  *
- * Total over the client's closed `reason` set, on purpose: an unmapped case
- * would fall through to a default, and the only safe default here is
- * "ambiguous", which is expensive. Making the compiler prove exhaustiveness is
- * cheaper than discovering a gap during a month-end close.
+ * Total over the client's closed `reason` set on purpose: an unmapped case
+ * would need a default, and the only safe default here is "ambiguous", which
+ * costs a manual reconciliation. Letting the compiler prove exhaustiveness is
+ * cheaper than finding the gap during a month-end close.
  */
-export function outcomeFor(result: MIResult, poster: VoucherPoster): AttemptResult {
-  if (result.ok) {
-    const voucher = poster.readVoucher(result);
-    return { outcome: "posted", ...voucher };
-  }
+export function outcomeFor(result: MIResult, step: PostingStep): AttemptResult {
+  if (result.ok) return { outcome: "posted" };
 
-  // The client sets `ambiguous` only when it genuinely cannot tell whether M3
-  // acted. It dominates every other consideration.
+  // `ambiguous` is set by the client only when it genuinely cannot tell whether
+  // M3 acted. It dominates everything else.
   if (result.ambiguous) {
-    return { outcome: "ambiguous", httpStatus: result.status, m3Message: result.message };
+    return {
+      outcome: "ambiguous",
+      httpStatus: result.status,
+      // What to go looking for differs sharply by step, and the person
+      // reconciling needs to know which they are facing.
+      m3Message: step.commits
+        ? `Outcome unknown on the committing ${step.kind} call: a voucher MAY exist. ${result.message}`
+        : `Outcome unknown on the ${step.kind} call (pre-commit): no voucher, but an unconfirmed batch may be left in M3. ${result.message}`,
+    };
   }
 
-  const base = { httpStatus: result.status, m3Message: result.message };
+  const base = { httpStatus: result.status, m3Message: `${step.kind}: ${result.message}` };
   switch (result.reason) {
     case "auth":
       return { outcome: "auth_error", ...base };
@@ -71,84 +73,179 @@ export function outcomeFor(result: MIResult, poster: VoucherPoster): AttemptResu
       // Our own bug or bad configuration - retrying changes nothing.
       return { outcome: "blocked", ...base };
     case "http_error":
-      // Not ambiguous, so this was a read or a definitively-rejected write.
       return { outcome: "rejected", ...base };
     case "unknown_delivery":
-      // Should have been caught by `ambiguous` above; treat as unknown anyway.
+      // Should have been caught by `ambiguous`; treat as unknown regardless.
       return { outcome: "ambiguous", ...base };
   }
 }
 
+function toDocument(posting: ClaimedPosting): PostingDocument {
+  return {
+    reference: posting.reference,
+    cono: posting.cono,
+    divi: posting.divi,
+    currency: posting.currency,
+    accountingDate: posting.accountingDate,
+    supplierNo: posting.supplierNo,
+    amountCents: posting.amountCents,
+    postingProfileKey: posting.postingProfileKey,
+    lines: posting.lines.map((l) => ({
+      lineNo: l.lineNo,
+      dim1: l.dim1,
+      dim2: l.dim2,
+      dim3: l.dim3,
+      dim4: l.dim4,
+      dim5: l.dim5,
+      dim6: l.dim6,
+      dim7: l.dim7,
+      amountCents: l.amountCents,
+      vatCode: l.vatCode,
+      description: l.description,
+    })),
+  };
+}
+
+export interface PostOutcome {
+  posting: ClaimedPosting;
+  outcome: AttemptResult["outcome"];
+  message?: string;
+  stepsRun: number;
+}
+
 /**
- * Post one queued voucher, or return null when the queue is empty.
+ * Post one queued voucher, or null when the queue is empty.
  *
- * Never throws for an M3-side failure: those are outcomes, and an outcome that
- * escaped as an exception would leave an attempt open and a posting claimed.
+ * Never throws for an M3-side failure: those are outcomes, and an exception
+ * escaping here would leave an attempt open and a posting claimed.
  */
-export async function postNext(client: M3Client, poster: VoucherPoster) {
+export async function postNext(
+  client: M3Client,
+  config: VoucherPosterConfig,
+): Promise<PostOutcome | null> {
   const posting = await claimNextPosting();
   if (!posting) return null;
 
-  const params = poster.buildParams(posting);
-
-  // Opened before the call. If the process dies after this line, the trail
-  // still shows what was attempted.
-  const { attemptId } = await beginAttempt(posting.id, {
-    program: poster.program,
-    transaction: poster.transaction,
-    requestParams: params,
-    claimToken: posting.claimToken,
-  });
-
-  let result: AttemptResult;
+  let steps: PostingStep[];
   try {
-    const mi = await client.execute(poster.program, poster.transaction, params, { write: true });
-    result = outcomeFor(mi, poster);
+    steps = buildSteps(config, toDocument(posting));
   } catch (e: unknown) {
-    // An unexpected throw tells us nothing about whether M3 acted, so it is
-    // treated exactly like a timeout: unknown, never retried.
-    result = {
-      outcome: "ambiguous",
-      m3Message: `Unexpected error: ${e instanceof Error ? e.message : String(e)}`,
-    };
+    // Nothing has been dispatched, so this is a clean, unambiguous block.
+    const message = e instanceof VoucherBuildError ? e.message : String(e);
+    const { attemptId } = await beginAttempt(posting.id, { claimToken: posting.claimToken });
+    await completeAttempt(attemptId, { outcome: "blocked", m3Message: message });
+    return { posting, outcome: "blocked", message, stepsRun: 0 };
+  }
+  let stepsRun = 0;
+
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i];
+    const isLast = i === steps.length - 1;
+
+    let attemptId: string;
+    try {
+      attemptId = (
+        await beginAttempt(posting.id, {
+          program: step.program,
+          transaction: step.transaction,
+          requestParams: step.params,
+          claimToken: posting.claimToken,
+          commits: step.commits,
+        })
+      ).attemptId;
+    } catch (e: unknown) {
+      // The claim was revoked (lease expired) or the posting was settled by
+      // someone else. Stop: dispatching now would race whoever owns it.
+      return {
+        posting,
+        outcome: "blocked",
+        message: `Could not open attempt: ${e instanceof Error ? e.message : String(e)}`,
+        stepsRun,
+      };
+    }
+
+    let result: AttemptResult;
+    let mi: MIResult | null = null;
+    try {
+      mi = await client.execute(step.program, step.transaction, step.params, { write: true });
+      result = outcomeFor(mi, step);
+    } catch (e: unknown) {
+      // An unexpected throw tells us nothing about whether M3 acted, so it is
+      // treated exactly like a timeout: unknown, never retried.
+      result = {
+        outcome: "ambiguous",
+        m3Message: `Unexpected error on ${step.kind}: ${e instanceof Error ? e.message : String(e)}`,
+      };
+    }
+
+    // The committing step is the only one allowed to report a voucher.
+    if (result.outcome === "posted" && mi?.ok && step.commits) {
+      // The committing step's OWN response mapping. When there is no confirm
+      // call, the last LINE commits, and reading head.response there would look
+      // for the voucher in the wrong place.
+      const response =
+        step.kind === "confirm"
+          ? config.confirm?.response
+          : step.kind === "line"
+            ? config.line.response
+            : config.head.response;
+      result.voucherNo = readField(mi, response?.voucherNo);
+      result.voucherSeries = readField(mi, response?.voucherSeries);
+      result.fiscalYear = readField(mi, response?.fiscalYear);
+    }
+
+    await completeAttempt(attemptId, result, { settle: isLast || result.outcome !== "posted" });
+    stepsRun++;
+
+    if (result.outcome !== "posted") {
+      return { posting, outcome: result.outcome, message: result.m3Message, stepsRun };
+    }
+
+    // Thread the batch id from the header into the calls that follow it.
+    if (step.kind === "head" && mi?.ok) {
+      const batchId = readField(mi, config.head.response?.batchId);
+      if (batchId) applyBatchId(config, steps, batchId);
+    }
   }
 
-  const settled = await completeAttempt(attemptId, result);
-  return { posting, result, settled };
+  return { posting, outcome: "posted", stepsRun };
 }
 
 /**
  * Drain the queue.
  *
- * Sequential by design. Postings are independent, but concurrency here buys
- * little and costs a great deal: parallel writers make the grid's own locking
- * the bottleneck and turn one bad configuration into many ambiguous postings
- * at once, each needing manual reconciliation.
+ * Sequential by design. Postings are independent, but concurrency buys little
+ * and costs a lot: parallel writers make the grid's own locking the bottleneck
+ * and turn one bad configuration into many ambiguous postings at once, each
+ * needing manual reconciliation.
  */
 export async function drainPostingQueue(
   client: M3Client,
-  poster: VoucherPoster,
+  config: VoucherPosterConfig,
   { max = 50, leaseMs = 5 * 60_000 }: { max?: number; leaseMs?: number } = {},
 ) {
   // Reclaim anything a dead worker left behind before taking new work, so a
-  // stuck posting surfaces as `unknown` promptly rather than after the next
-  // deploy.
+  // stuck posting surfaces as `unknown` promptly rather than after a redeploy.
   const { recovered } = await recoverStalePostings(leaseMs);
 
   let processed = 0;
+  let stoppedEarly: string | null = null;
   const outcomes: Record<string, number> = {};
 
   while (processed < max) {
-    const done = await postNext(client, poster);
+    const done = await postNext(client, config);
     if (!done) break;
     processed++;
-    outcomes[done.result.outcome] = (outcomes[done.result.outcome] ?? 0) + 1;
+    outcomes[done.outcome] = (outcomes[done.outcome] ?? 0) + 1;
 
-    // An ambiguous posting means we no longer know the ledger's state. Stop:
-    // whatever caused it is likely to affect the next posting too, and turning
-    // one reconciliation into fifty helps nobody.
-    if (done.result.outcome === "ambiguous") break;
+    // An ambiguous posting means we no longer know the ledger's state, and an
+    // auth failure means none of the rest will fare better. Stop either way:
+    // turning one reconciliation into fifty helps nobody.
+    if (done.outcome === "ambiguous" || done.outcome === "auth_error") {
+      stoppedEarly = done.outcome;
+      break;
+    }
   }
 
-  return { recovered, processed, outcomes };
+  return { recovered, processed, outcomes, stoppedEarly };
 }

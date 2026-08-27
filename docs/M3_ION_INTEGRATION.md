@@ -229,6 +229,56 @@ overwrite: its result is appended as a new attempt, and a late `posted` with a
 voucher number is allowed to resolve `unknown` → `posted`. That is the single
 most valuable record in the trail.
 
+### Posting is a sequence, not a call
+
+An M3 voucher is a header, then a line per posting line, then a confirm. The
+steps are **not equally dangerous**, and collapsing them into one opaque "write"
+either over-reports ambiguity (every network blip becomes a manual
+reconciliation) or under-reports it:
+
+| Step | On an unknown outcome |
+|---|---|
+| head, line | A batch may be **staged**. No voucher exists. Find and clear it |
+| confirm | A **voucher may exist**. Reconcile by reference before re-posting |
+
+Each step is its own attempt row, carrying a `commits` flag, so the audit trail
+says which of those two situations you are in. Only a committing call may settle
+a posting as `posted` — enforced in `completeAttempt`, not just in the worker, so
+a future caller cannot report a staged header as a voucher. A late reply is
+judged the same way: a head arriving after its lease expired cannot resolve an
+`unknown`.
+
+The MI names and field mapping are **config**, in `voucherPoster`, discovered
+with `MRS001MI/LstTransactions` and `LstFields`. This follows what
+an existing internal M3 integration learned: its field mapping lives in config with a probe
+script, because guessing produced "field not found" errors that looked like
+outages. Per-step `constants` carry installation values (FAM function, voucher
+series). `amountFormat` has no default — we store cents and M3 usually wants
+major units, and getting it wrong is a 100x error in the ledger.
+
+### Running the queue
+
+`POST /api/m3/postings/drain`, by cron or by a signed-in admin:
+
+```
+*/15 * * * * curl -s -X POST -H "x-cron-secret: $CRON_SECRET" \
+  https://receipts.example.com/api/m3/postings/drain >/dev/null
+```
+
+`CRON_SECRET` is **required** — no `AUTH_SECRET` fallback as the barcode-retry
+job has. That fallback would make the session-signing secret a credential that
+moves money. The comparison is constant-time.
+
+Response codes are chosen so a monitor can tell the difference between a chosen
+pause and a broken deployment: `200 {ran:false}` when the integration is
+deliberately inactive or dry-run/unarmed, and **500** when someone enabled it
+and the config is wrong.
+
+The drain stops early on the first `ambiguous` or `auth_error`: whatever caused
+it will likely affect the next posting too, and turning one reconciliation into
+fifty helps nobody. Retries are budgeted per **sequence** (`tries`), not per MI
+call, so a twenty-line voucher does not exhaust its budget on its first attempt.
+
 ### The audit trail
 
 At `/postings`, scoped by role: a user sees their own, an approver their groups',

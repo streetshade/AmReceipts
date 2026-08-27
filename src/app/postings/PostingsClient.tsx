@@ -321,6 +321,13 @@ function PostingRow({ row, open, onToggle }: { row: AuditRow; open: boolean; onT
                       <li key={a.attemptNo} className="flex flex-wrap items-baseline gap-x-3">
                         <span className="text-muted">#{a.attemptNo}</span>
                         <span className={a.ambiguous ? "font-semibold text-red-300" : ""}>{a.outcome}</span>
+                        {/* An ambiguous non-committing call left a staged batch,
+                            not a voucher - a completely different remedy. */}
+                        {a.ambiguous && (
+                          <span className="badge bg-red-500/15 text-red-300">
+                            {a.commits ? "voucher may exist" : "batch may be staged"}
+                          </span>
+                        )}
                         <span className="text-muted">{new Date(a.startedAt).toLocaleString()}</span>
                         {a.finishedAt === null && a.outcome === "in_flight" && (
                           <span className="font-semibold text-red-300">still open</span>

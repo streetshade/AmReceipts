@@ -292,7 +292,13 @@ model M3Posting {
   voucherSeries String?
   fiscalYear    String?
 
+  // Number of individual MI CALLS made. A multi-line voucher makes many per
+  // sequence, so this is not a retry count.
   attempts      Int       @default(0)
+  // Number of times the queue has taken this posting for a full send sequence.
+  // THIS is what the retry budget is measured against; counting steps would
+  // exhaust a four-line voucher's budget during its very first attempt.
+  tries         Int       @default(0)
   lastError     String?
   nextAttemptAt DateTime?
   postedAt      DateTime?
@@ -390,6 +396,10 @@ model M3PostingAttempt {
   httpStatus Int?
   m3Message  String?
   voucherNo  String?
+  // True for the one call in a sequence that actually commits the voucher.
+  // A head or line call that comes back late must never be allowed to resolve
+  // an unknown into "posted" - it staged a batch, it did not post anything.
+  commits    Boolean @default(false)
   // True when we could not determine whether M3 applied the write.
   ambiguous  Boolean @default(false)
   durationMs Int?

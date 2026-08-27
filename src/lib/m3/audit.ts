@@ -67,6 +67,12 @@ export interface AuditAttempt {
   attemptNo: number;
   outcome: string;
   ambiguous: boolean;
+  /**
+   * Whether this call was the one that commits the voucher. An ambiguous
+   * attempt with commits=false staged a batch and left no voucher: the remedy
+   * is to find and clear the unconfirmed batch, not to hunt for a posting.
+   */
+  commits: boolean;
   httpStatus: number | null;
   m3Message: string | null;
   voucherNo: string | null;
@@ -224,6 +230,7 @@ export async function queryAudit(filters: AuditFilters): Promise<{ rows: AuditRo
         attemptNo: a.attemptNo,
         outcome: a.outcome,
         ambiguous: a.ambiguous,
+        commits: a.commits,
         httpStatus: a.httpStatus,
         m3Message: a.m3Message,
         voucherNo: a.voucherNo,
