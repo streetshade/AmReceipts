@@ -11,6 +11,10 @@ for reporting.
 
 - **Accounts** — email/password auth with signed session cookies.
 - **Sessions** — group receipts and scanned items for one trip/errand.
+- **PDF receipts** — upload the PDF an online purchase gives you instead of photographing
+  a screen. PDFs carry a real text layer, so the details are read directly rather than
+  OCR'd, which makes them more accurate than any photo and works on every OCR provider
+  (including the offline stub). A scanned PDF with no text layer falls back to manual entry.
 - **Receipt scanning** — capture from the phone camera; OCR extracts merchant, date,
   subtotal/tax/total, line items and payment method. Everything is user-verifiable/editable.
 - **Payment methods** — the method read off a receipt (e.g. `VISA ****1234`) is reconciled
@@ -140,6 +144,7 @@ A full walkthrough (nginx + TLS, systemd, PostgreSQL, Google Vision) is in
 prisma/schema.prisma          Data model (User, PaymentMethod, Job, ExpenseSession,
                               Receipt, LineItem, Product, ScannedItem)
 prisma/seed.ts                Seeded barcode catalogue + demo user
+src/lib/providers/pdf.ts      PDF text-layer extraction + invoice-shaped parsing
 src/lib/providers/ocr.ts      OCR provider interface, receipt-text parser, stub + tesseract
 src/lib/providers/barcode.ts  Barcode provider interface, local + upcitemdb
 src/lib/matching.ts           Scanned-item ↔ line-item reconciliation
