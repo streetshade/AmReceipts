@@ -1,0 +1,31 @@
+# Build context hygiene. Everything here is either rebuilt inside the image,
+# irrelevant to it, or must never enter it.
+
+# Rebuilt in the image, and a host node_modules would be the WRONG platform -
+# Prisma's query engine and any native module are compiled per-platform, so
+# copying macOS binaries into a Linux image produces confusing runtime errors.
+node_modules
+.next
+out
+
+.git
+.gitignore
+.github
+
+# Secrets. .env.example is kept: it is documentation, not credentials.
+.env
+.env.*
+!.env.example
+*.ionapi
+
+# Local data that must not be baked into an image and shipped.
+*.db
+*.db-journal
+prisma/*.db
+public/uploads
+
+npm-debug.log*
+.DS_Store
+README.md
+docs
+deploy
