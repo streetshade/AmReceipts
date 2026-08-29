@@ -8,7 +8,10 @@ name: Build
 on:
   pull_request:
   push:
-    branches: [main, claude/documentai-ocr]
+    # This repo has no `main`; its default line is the branch below. The
+    # original list named branches that do not exist here, so pushes never
+    # triggered a build - only pull requests did.
+    branches: [claude/expense-receipt-scanner-d49sj7, m3-ion-integration]
 
 jobs:
   build:
