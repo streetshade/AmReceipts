@@ -370,6 +370,21 @@ through to broader rules while it is null.
    never a delete.
 5. **Period/balance checks** before the call, not after the rejection.
 
+## Where the grid facts came from
+
+The connection shape, the `maxrecs` behaviour, the error shapes and the
+`MRS001MI` discovery route in this document were all read out of a working
+in-house PHP integration that talks to a live M3 grid in this estate. They are
+**observed**, not taken from documentation, which is why they are worth
+trusting — and equally why they are worth re-checking, since they describe one
+grid at one point in time.
+
+That source lives in a private repository and is not linked from here. Nobody
+reading this repo can verify these claims against it, so treat every specific
+(ports, path prefixes, record caps, field names) as a starting hypothesis to
+confirm against your own environment with `MRS001MI/LstTransactions` and
+`LstFields`.
+
 ## Still to confirm with the M3 team
 
 - Which MI program actually accepts the voucher on this grid, and whether it

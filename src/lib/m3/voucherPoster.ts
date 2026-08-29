@@ -1,6 +1,6 @@
 // How a voucher is actually built and sent to M3.
 //
-// Config-driven, not hardcoded. This mirrors what the an existing internal M3 integration
+// Config-driven, not hardcoded. This mirrors what an existing internal M3 integration
 // integration learned the hard way: MI transactions and their field names are
 // defined PER INSTALLATION, so that portal keeps its field mapping in config
 // and ships a probe script to discover the real names. Guessing them in code
