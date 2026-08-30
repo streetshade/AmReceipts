@@ -23,4 +23,4 @@ prisma/dev.db-journal
 *.log
 next-env.d.ts
 .vercel
-.tsbuildinfo
+*.tsbuildinfo
