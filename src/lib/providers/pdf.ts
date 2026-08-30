@@ -14,8 +14,33 @@
 //
 // pdfjs is loaded lazily so the image path never pays for it.
 
+import path from "node:path";
 import { parseReceiptText, type ParsedReceipt } from "./ocr";
 import { parseToCents } from "../money";
+
+/**
+ * Directory holding pdfjs's own copy of the 14 standard PDF fonts.
+ *
+ * Without this pdfjs warns and can mis-measure text laid out in Helvetica,
+ * Times or Courier - which is most invoices - and text position is exactly
+ * what the line reconstruction depends on. It resolves to a path INSIDE
+ * node_modules, so this is a local file read, not the remote fetch the
+ * hardening below is there to prevent.
+ */
+function standardFontsDir(): string | undefined {
+  try {
+    // createRequire rather than a bare require: this module is bundled for the
+    // Next server runtime in production and run through tsx in scripts, and
+    // only one of those has `require` in scope.
+    const { createRequire } = require("node:module") as typeof import("node:module");
+    const req = createRequire(__filename);
+    return path.join(path.dirname(req.resolve("pdfjs-dist/package.json")), "standard_fonts") + path.sep;
+  } catch {
+    // Falling back to undefined reproduces the old behaviour: a warning and
+    // slightly less reliable metrics, rather than a failed extraction.
+    return undefined;
+  }
+}
 
 /** Below this many characters we assume there is no usable text layer. */
 const MIN_USEFUL_TEXT = 40;
@@ -99,8 +124,10 @@ export async function extractPdfText(bytes: Buffer): Promise<PdfExtraction> {
         isEvalSupported: false,
         disableFontFace: true,
         useSystemFonts: false,
-        // Never let a document pull in remote resources.
-      standardFontDataUrl: undefined,
+        // A LOCAL directory under node_modules - never a URL. The document still
+      // cannot pull in remote resources; it just gets the standard font
+      // metrics it needs to be laid out correctly.
+      standardFontDataUrl: standardFontsDir(),
     });
     // Held separately: if the load itself times out, `doc` is never assigned
     // and the task would otherwise be unreachable and undestroyable.
