@@ -37,6 +37,9 @@ services:
       # Generate with: openssl rand -hex 32
       AUTH_SECRET: "${AUTH_SECRET:?set AUTH_SECRET in .env or the environment}"
       CRON_SECRET: "${CRON_SECRET:-}"
+      # Encrypts integration secrets at rest. Falls back to a key derived from
+      # AUTH_SECRET when unset - see .env.example for the caveat.
+      CONFIG_ENCRYPTION_KEY: "${CONFIG_ENCRYPTION_KEY:-}"
       OCR_PROVIDER: "${OCR_PROVIDER:-stub}"
       BARCODE_PROVIDER: "${BARCODE_PROVIDER:-upcitemdb}"
       UPCITEMDB_API_KEY: "${UPCITEMDB_API_KEY:-}"

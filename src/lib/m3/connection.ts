@@ -6,8 +6,9 @@
 // decide whether this may write to a production ledger.
 
 import { prisma } from "../db";
+import { open } from "../secretbox";
 import { M3Client } from "./client";
-import { parseConnection, type M3ConnectionConfig } from "./config";
+import { parseConnection, M3Secrets, type M3ConnectionConfig } from "./config";
 import { VoucherPosterConfig } from "./voucherPoster";
 
 export const M3_INTEGRATION_KEY = "m3_ion";
@@ -50,7 +51,29 @@ export async function loadM3(): Promise<LoadResult> {
     return { ok: false, kind: "misconfigured", reason: "M3 integration config must be an object" };
   }
 
-  const { connection, voucherPoster } = raw as Record<string, unknown>;
+  const stored = raw as Record<string, unknown>;
+
+  // The admin console writes flat fields (see integrations/registry.ts); an
+  // env-configured deployment may instead nest a `connection` object. Accept
+  // both rather than forcing one, and map the console's names onto the
+  // connection schema.
+  const connection = (stored.connection as Record<string, unknown>) ?? {
+    authMode: stored.authMode,
+    baseUrl: stored.baseUrl,
+    tokenUrl: stored.tokenUrl,
+    clientId: stored.clientId,
+    environment: stored.environment,
+    dryRun: stored.dryRun,
+    armed: stored.armed,
+    verifyTls: stored.verifyTls,
+    // The console calls it "Company (CONO)"; the transport calls it the
+    // per-call default.
+    defaultCono: stored.cono || undefined,
+    maxrecs: stored.maxrecs,
+    requestTimeoutMs: stored.requestTimeoutMs,
+    connectTimeoutMs: stored.connectTimeoutMs,
+  };
+  const voucherPoster = stored.voucherPoster;
 
   const parsed = parseConnection(connection, prodHostAllowlist());
   if (!parsed.ok) {
@@ -72,9 +95,28 @@ export async function loadM3(): Promise<LoadResult> {
     };
   }
 
+  // Secrets come from the encrypted column, falling back to the environment
+  // when the console has not been used. Mapped onto the shape the transport
+  // expects: the console stores "clientSecret", the .ionapi field is "cs".
+  const vault = open<Record<string, string>>(integration.secrets);
+  let secrets: M3Secrets | undefined;
+  if (vault) {
+    const candidate =
+      parsed.config.authMode === "oauth_password"
+        ? { authMode: "oauth_password", cs: vault.clientSecret, saak: vault.saak, sask: vault.sask }
+        : { authMode: "basic", username: vault.username, password: vault.password };
+    const checked = M3Secrets.safeParse(candidate);
+    if (!checked.success) {
+      // Field names only - the values are the secret.
+      const missing = checked.error.issues.map((i) => i.path.join(".") || "(root)").join(", ");
+      return { ok: false, kind: "misconfigured", reason: `Stored credentials incomplete: ${missing}` };
+    }
+    secrets = checked.data;
+  }
+
   return {
     ok: true,
-    client: new M3Client(parsed.config),
+    client: new M3Client(parsed.config, secrets),
     connection: parsed.config,
     poster: poster.data,
   };

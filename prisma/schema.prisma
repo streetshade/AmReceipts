@@ -59,15 +59,24 @@ model Group {
   updatedAt DateTime @updatedAt
 }
 
-// A configurable integration with an external business system (e.g. PSA Web).
-// This is an admin-managed stub: config is stored, but no integration logic yet.
+// A configurable integration with an external business system.
+//
+// Which integrations exist, what fields they take and which of those are
+// secret is defined in src/lib/integrations/registry.ts - this table holds
+// only the values. Mutual exclusion (one expense-posting system at a time) is
+// likewise derived from the registry rather than stored here, so the rule
+// cannot drift out of step with the definitions it applies to.
 model Integration {
   id        String  @id @default(cuid())
   key       String  @unique // stable slug, e.g. "psa_web"
   name      String
   enabled   Boolean @default(false)
-  // JSON-encoded config (endpoint, credentials placeholders, etc.).
+  // JSON-encoded NON-SECRET config (endpoints, GL options, flags).
   config    String  @default("{}")
+  // Secret fields, AES-256-GCM sealed (see src/lib/secretbox.ts). Never
+  // returned to a browser: the console reports whether each is set and can
+  // replace it, but cannot read it back.
+  secrets   String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

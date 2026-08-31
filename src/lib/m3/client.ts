@@ -12,7 +12,7 @@
 import { createHash } from "node:crypto";
 import { httpRequest } from "./http";
 import { loadSecrets } from "./secrets";
-import type { M3ConnectionConfig } from "./config";
+import type { M3ConnectionConfig, M3Secrets } from "./config";
 
 export type MIRecord = Record<string, string>;
 
@@ -112,13 +112,33 @@ function encodeQuery(params: Record<string, string>): string {
 const SAFE_NAME = /^[A-Za-z0-9_]+$/;
 
 export class M3Client {
-  constructor(private readonly config: M3ConnectionConfig) {}
+  /**
+   * @param injectedSecrets Credentials supplied by the caller - what the admin
+   *        console stores, encrypted, in the database. When omitted the client
+   *        falls back to reading the environment variable named by
+   *        `secretRef`, which is how a deployment that prefers env-only
+   *        configuration keeps working.
+   */
+  constructor(
+    private readonly config: M3ConnectionConfig,
+    private readonly injectedSecrets?: M3Secrets,
+  ) {}
+
+  private resolveSecrets(): { ok: true; secrets: M3Secrets } | { ok: false; error: string } {
+    if (this.injectedSecrets) return { ok: true, secrets: this.injectedSecrets };
+    return loadSecrets(this.config);
+  }
 
   private cacheKey(): string {
+    // Includes a fingerprint of the credential SOURCE: two clients pointing at
+    // the same grid with different credentials must not share a cached token.
+    const credentialId = this.injectedSecrets
+      ? createHash("sha256").update(JSON.stringify(this.injectedSecrets)).digest("hex").slice(0, 16)
+      : `env:${this.config.secretRef}`;
     const parts =
       this.config.authMode === "oauth_password"
-        ? [this.config.tokenUrl, this.config.clientId, this.config.secretRef]
-        : [this.config.baseUrl, this.config.secretRef];
+        ? [this.config.tokenUrl, this.config.clientId, credentialId]
+        : [this.config.baseUrl, credentialId];
     // Ties the cached token to this grid+client so test and prod never share one.
     return createHash("sha256").update(parts.join("|")).digest("hex");
   }
@@ -225,7 +245,7 @@ export class M3Client {
   private async fetchToken(key: string): Promise<string | null> {
     if (this.config.authMode !== "oauth_password") return null;
 
-    const secrets = loadSecrets(this.config);
+    const secrets = this.resolveSecrets();
     if (!secrets.ok || secrets.secrets.authMode !== "oauth_password") {
       console.error(`M3Client: ${secrets.ok ? "unexpected secret shape" : secrets.error}`);
       return null;
@@ -435,7 +455,7 @@ export class M3Client {
       }
       headers.Authorization = `Bearer ${token}`;
     } else {
-      const secrets = loadSecrets(this.config);
+      const secrets = this.resolveSecrets();
       if (!secrets.ok || secrets.secrets.authMode !== "basic") {
         return { ok: false, message: "Could not load M3 basic credentials.", status: 0, ambiguous: false, reason: "auth" };
       }
