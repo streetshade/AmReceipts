@@ -14,6 +14,10 @@ export interface IntegrationDTO {
   config: Record<string, unknown>;
   /** Whether each secret is stored. Never the value itself. */
   secretsSet: Record<string, boolean>;
+  /** Credentials are stored but could not be decrypted. */
+  secretsUnreadable: boolean;
+  /** Row version, echoed back on save to detect a concurrent edit. */
+  version: string | null;
 }
 
 export default function IntegrationsClient({ integrations }: { integrations: IntegrationDTO[] }) {
@@ -63,26 +67,69 @@ function IntegrationCard({
 }) {
   const router = useRouter();
   const [config, setConfig] = useState<Record<string, unknown>>(integration.config);
-  // Only what the admin has typed this session. An untouched secret is never
-  // sent, so saving the form cannot blank a credential you did not re-enter.
+  // What the admin actually typed this session. An untouched secret is never
+  // sent, so saving cannot blank a credential nobody re-entered.
   const [secretEdits, setSecretEdits] = useState<Record<string, string>>({});
+  // Secrets whose input has been opened for replacement. Deliberately separate
+  // from `secretEdits`: staging an empty string on "Replace" meant that
+  // clicking it and saving without typing anything DELETED the credential.
+  const [replacing, setReplacing] = useState<Set<string>>(new Set());
+  // Secrets explicitly marked for deletion. Only these send "".
+  const [clearing, setClearing] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   const groups = [...new Set(integration.fields.map((f) => f.group))];
 
+  /** Recovery from an undecryptable blob: discard it and start again. */
+  async function clearAllSecrets() {
+    setBusy(true);
+    setErr(null);
+    const res = await fetch(`/api/admin/integrations/${integration.key}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      // Any values typed alongside are applied on top of the wipe, so
+      // "clear and re-enter" really is one action.
+      body: JSON.stringify({ clearAllSecrets: true, secrets: secretEdits }),
+    });
+    setBusy(false);
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      setErr(body.error ?? "Could not clear credentials");
+      return;
+    }
+    const data = await res.json();
+    setSecretEdits({});
+    setReplacing(new Set());
+    setClearing(new Set());
+    onLocalChange({
+      ...integration,
+      secretsSet: data.integration.secretsSet,
+      secretsUnreadable: data.integration.secretsUnreadable ?? false,
+      version: data.integration.version ?? integration.version,
+    });
+    router.refresh();
+  }
+
   async function save(enabled: boolean) {
     setBusy(true);
     setSaved(false);
     setErr(null);
+    // Typed values, plus explicit clears as "". A field merely opened for
+    // replacement and left blank sends nothing at all.
+    const secrets: Record<string, string> = {};
+    for (const [k, v] of Object.entries(secretEdits)) if (v !== "") secrets[k] = v;
+    for (const k of clearing) secrets[k] = "";
+
     const res = await fetch(`/api/admin/integrations/${integration.key}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         enabled,
         config,
-        ...(Object.keys(secretEdits).length > 0 ? { secrets: secretEdits } : {}),
+        ...(Object.keys(secrets).length > 0 ? { secrets } : {}),
+        ...(integration.version ? { expectedVersion: integration.version } : {}),
       }),
     });
     setBusy(false);
@@ -96,11 +143,15 @@ function IntegrationCard({
     const data = await res.json();
     setSaved(true);
     setSecretEdits({});
+    setReplacing(new Set());
+    setClearing(new Set());
     onLocalChange({
       ...integration,
       enabled: data.integration.enabled,
       config: data.integration.config,
       secretsSet: data.integration.secretsSet,
+      secretsUnreadable: data.integration.secretsUnreadable ?? false,
+      version: data.integration.version ?? integration.version,
     });
     if (enabled) onEnabled(integration.key, data.disabled ?? []);
     router.refresh();
@@ -137,6 +188,23 @@ function IntegrationCard({
 
       <p className="border-b border-line px-4 py-2 text-sm text-muted">{integration.description}</p>
 
+      {integration.secretsUnreadable && (
+        <div className="space-y-2 border-b border-line bg-red-500/10 px-4 py-3 text-sm text-red-300">
+          <p>
+            Stored credentials cannot be decrypted — usually because CONFIG_ENCRYPTION_KEY changed. Saving
+            new credentials is refused while this is true, so that whatever is stored is not overwritten by
+            accident.
+          </p>
+          <p className="text-muted">
+            Restore the previous key to recover them, or discard them and enter new ones. You can type
+            replacements into the fields below first and they will be applied in the same step.
+          </p>
+          <button type="button" className="btn-secondary" disabled={busy} onClick={() => void clearAllSecrets()}>
+            Clear stored credentials
+          </button>
+        </div>
+      )}
+
       <div className="space-y-5 p-4">
         {groups.map((group) => (
           <fieldset key={group}>
@@ -151,9 +219,16 @@ function IntegrationCard({
                     value={config[f.name]}
                     secretStored={integration.secretsSet[f.name] ?? false}
                     secretEdit={secretEdits[f.name]}
+                    replacing={replacing.has(f.name)}
+                    clearing={clearing.has(f.name)}
                     onValue={(v) => setConfig({ ...config, [f.name]: v })}
                     onSecret={(v) => setSecretEdits({ ...secretEdits, [f.name]: v })}
-                    onClearSecret={() => setSecretEdits({ ...secretEdits, [f.name]: "" })}
+                    onStartReplace={() => setReplacing(new Set(replacing).add(f.name))}
+                    onToggleClear={() => {
+                      const next = new Set(clearing);
+                      next.has(f.name) ? next.delete(f.name) : next.add(f.name);
+                      setClearing(next);
+                    }}
                   />
                 ))}
             </div>
@@ -180,17 +255,23 @@ function Field({
   value,
   secretStored,
   secretEdit,
+  replacing,
+  clearing,
   onValue,
   onSecret,
-  onClearSecret,
+  onStartReplace,
+  onToggleClear,
 }: {
   field: FieldDef;
   value: unknown;
   secretStored: boolean;
   secretEdit: string | undefined;
+  replacing: boolean;
+  clearing: boolean;
   onValue: (v: unknown) => void;
   onSecret: (v: string) => void;
-  onClearSecret: () => void;
+  onStartReplace: () => void;
+  onToggleClear: () => void;
 }) {
   const id = `f-${field.name}`;
 
@@ -226,29 +307,41 @@ function Field({
   }
 
   if (field.secret) {
-    const editing = secretEdit !== undefined;
+    // A stored secret is never sent to the browser, so there is nothing to put
+    // in this box. It offers replacement, not display.
+    const showInput = !secretStored || replacing;
     return (
       <div>
         <label className="label" htmlFor={id}>{field.label}</label>
-        {/* A stored secret is never sent to the browser, so there is nothing to
-            put in this box. It offers replacement, not display. */}
-        {!editing && secretStored ? (
-          <div className="flex items-center gap-2">
-            <span className="badge bg-emerald-500/15 text-emerald-300">configured</span>
-            <button type="button" className="text-sm text-muted underline hover:text-content" onClick={() => onSecret("")}>
-              Replace
-            </button>
-            <button type="button" className="text-sm text-red-300 underline" onClick={onClearSecret}>
-              Clear
-            </button>
+        {secretStored && !replacing ? (
+          <div className="flex flex-wrap items-center gap-2">
+            {clearing ? (
+              <>
+                <span className="badge bg-red-500/15 text-red-300">will be cleared on save</span>
+                <button type="button" className="text-sm text-muted underline hover:text-content" onClick={onToggleClear}>
+                  Keep
+                </button>
+              </>
+            ) : (
+              <>
+                <span className="badge bg-emerald-500/15 text-emerald-300">configured</span>
+                <button type="button" className="text-sm text-muted underline hover:text-content" onClick={onStartReplace}>
+                  Replace
+                </button>
+                <button type="button" className="text-sm text-red-300 underline" onClick={onToggleClear}>
+                  Clear
+                </button>
+              </>
+            )}
           </div>
-        ) : (
+        ) : null}
+        {showInput && (
           <input
             id={id}
             className="input"
             type="password"
             autoComplete="new-password"
-            placeholder={secretStored ? "Enter a new value" : field.placeholder ?? "••••••••"}
+            placeholder={secretStored ? "Enter a new value (leave blank to keep the current one)" : field.placeholder ?? "••••••••"}
             value={secretEdit ?? ""}
             onChange={(e) => onSecret(e.target.value)}
           />

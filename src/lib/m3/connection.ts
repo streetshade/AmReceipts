@@ -98,13 +98,26 @@ export async function loadM3(): Promise<LoadResult> {
   // Secrets come from the encrypted column, falling back to the environment
   // when the console has not been used. Mapped onto the shape the transport
   // expects: the console stores "clientSecret", the .ionapi field is "cs".
-  const vault = open<Record<string, string>>(integration.secrets);
+  const vault = open<Record<string, string>>(integration.secrets, M3_INTEGRATION_KEY);
+
+  // Fail closed. Falling back to the environment here would mean a tampered or
+  // undecryptable credential blob silently posts to the ledger with whatever
+  // the environment happens to hold.
+  if (vault.status === "unreadable") {
+    return {
+      ok: false,
+      kind: "misconfigured",
+      reason: `Stored M3 credentials cannot be decrypted (${vault.reason}). Check CONFIG_ENCRYPTION_KEY.`,
+    };
+  }
+
   let secrets: M3Secrets | undefined;
-  if (vault) {
+  if (vault.status === "ok") {
+    const v = vault.value;
     const candidate =
       parsed.config.authMode === "oauth_password"
-        ? { authMode: "oauth_password", cs: vault.clientSecret, saak: vault.saak, sask: vault.sask }
-        : { authMode: "basic", username: vault.username, password: vault.password };
+        ? { authMode: "oauth_password", cs: v.clientSecret, saak: v.saak, sask: v.sask }
+        : { authMode: "basic", username: v.username, password: v.password };
     const checked = M3Secrets.safeParse(candidate);
     if (!checked.success) {
       // Field names only - the values are the secret.

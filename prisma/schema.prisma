@@ -66,6 +66,22 @@ model Group {
 // only the values. Mutual exclusion (one expense-posting system at a time) is
 // likewise derived from the registry rather than stored here, so the rule
 // cannot drift out of step with the definitions it applies to.
+// One row per mutual-exclusion group, updated inside the same transaction that
+// flips an integration on.
+//
+// It exists to be LOCKED, not to be read. Without it, two concurrent enables on
+// Postgres READ COMMITTED can each see the other still disabled, each enable
+// itself, and both commit - leaving two active posting systems and the same
+// spend posted to two ledgers. Serialising on a single row makes the second
+// transaction wait for the first to commit and then act on what it actually
+// did. (SQLite already serialises writes; this is what makes the invariant hold
+// on a real production database too.)
+model IntegrationGroup {
+  group     String   @id
+  activeKey String?
+  updatedAt DateTime @updatedAt
+}
+
 model Integration {
   id        String  @id @default(cuid())
   key       String  @unique // stable slug, e.g. "psa_web"

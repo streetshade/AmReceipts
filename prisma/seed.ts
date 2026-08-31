@@ -276,6 +276,14 @@ async function main() {
     create: { userId: user.id, number: "JOB-1001", name: "Downtown site fit-out" },
   });
 
+  // The lock row for the expense-posting group. Created up front so enabling
+  // an integration only ever takes a row lock, never races to insert one.
+  await prisma.integrationGroup.upsert({
+    where: { group: "expense_posting" },
+    update: {},
+    create: { group: "expense_posting", activeKey: null },
+  });
+
   // Business-system integrations. Both start disabled and empty: they are
   // mutually exclusive (one expense-posting system at a time) and neither can
   // send anything until an admin configures it. `update: {}` so re-seeding a

@@ -21,7 +21,14 @@ export default async function IntegrationsPage() {
   // never seeded still appears (unconfigured) rather than silently missing.
   const dtos: IntegrationDTO[] = INTEGRATIONS.map((def) => {
     const row = byKey.get(def.key);
-    const stored = open<Record<string, string>>(row?.secrets) ?? {};
+    const vault = open<Record<string, string>>(row?.secrets, def.key);
+    const stored = vault.status === "ok" ? vault.value : {};
+    // Parsed through the registry schema rather than passed through raw. This
+    // is a Client Component prop, so it is serialised into the browser payload:
+    // anything that reached the column by another route - a legacy shape, a
+    // hand-edited row - must not ride along. Zod strips unknown keys, so
+    // parsing is the redaction.
+    const parsedConfig = def.config.safeParse(row ? safeParse(row.config) : {});
     return {
       key: def.key,
       name: def.name,
@@ -29,10 +36,16 @@ export default async function IntegrationsPage() {
       exclusiveGroup: def.exclusiveGroup,
       fields: def.fields,
       enabled: row?.enabled ?? false,
-      config: row ? safeParse(row.config) : {},
-      // Presence only. Values are decrypted here purely to answer "is it set?"
-      // and never leave the server.
-      secretsSet: Object.fromEntries(secretFieldNames(def).map((n) => [n, Boolean(stored[n])])),
+      config: parsedConfig.success ? parsedConfig.data : {},
+      version: row?.updatedAt.toISOString() ?? null,
+      // Surfaced rather than swallowed: credentials that exist but cannot be
+      // decrypted must not look identical to none being configured.
+      secretsUnreadable: vault.status === "unreadable",
+      // Presence only, and whitespace is not presence. Values are decrypted
+      // here purely to answer "is it set?" and never leave the server.
+      secretsSet: Object.fromEntries(
+        secretFieldNames(def).map((n) => [n, typeof stored[n] === "string" && stored[n].trim() !== ""]),
+      ),
     };
   });
 

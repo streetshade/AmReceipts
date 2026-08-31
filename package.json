@@ -9,6 +9,7 @@
     "start": "next start",
     "lint": "next lint",
     "smoke:pdf": "tsx scripts/pdf-smoke.ts",
+    "check:secretbox": "tsx scripts/secretbox-check.ts",
     "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed.ts",
     "db:reset": "prisma db push --force-reset && npm run db:seed",

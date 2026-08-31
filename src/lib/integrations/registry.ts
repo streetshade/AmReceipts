@@ -76,7 +76,9 @@ const psaWeb: IntegrationDef = {
     defaultCostCentre: z.string().trim().default(""),
     syncExpenses: z.boolean().default(false),
   }),
-  secrets: z.object({ apiKey: z.string().min(1).optional() }),
+  // Trimmed BEFORE the length check: "   " passes .min(1) untrimmed, and would
+  // be stored while the presence check (which trims) reported it as unset.
+  secrets: z.object({ apiKey: z.string().trim().min(1, "cannot be blank").optional() }),
 };
 
 // ---------------------------------------------------------------------------
@@ -158,9 +160,9 @@ const m3Ion: IntegrationDef = {
     }
   }) as unknown as z.ZodType<Record<string, unknown>>,
   secrets: z.object({
-    clientSecret: z.string().min(1).optional(),
-    saak: z.string().min(1).optional(),
-    sask: z.string().min(1).optional(),
+    clientSecret: z.string().trim().min(1, "cannot be blank").optional(),
+    saak: z.string().trim().min(1, "cannot be blank").optional(),
+    sask: z.string().trim().min(1, "cannot be blank").optional(),
   }),
 };
 
