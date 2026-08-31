@@ -26,7 +26,10 @@ services:
       target: runner
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      # Host port is configurable so the container can run alongside a local
+      # `npm run dev`, which also wants 3000. Without this, whichever started
+      # first wins and the other silently is not what you are talking to.
+      - "${APP_PORT:-3000}:3000"
     environment:
       # SQLite lives on the `data` volume, NOT in the image - a database baked
       # into an image is lost on every redeploy.

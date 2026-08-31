@@ -80,6 +80,14 @@ COPY --from=builder --chown=node:node /app/public ./public
 COPY --from=builder --chown=node:node /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=builder --chown=node:node /app/node_modules/@prisma/client ./node_modules/@prisma/client
 
+# pdfjs-dist, whole. Next's file tracing copies pdf.mjs but not the sibling
+# pdf.worker.mjs, because that is only referenced through a dynamic specifier
+# the tracer cannot follow - so PDF uploads fail at runtime with "Setting up
+# fake worker failed". The standard_fonts directory has the same problem and is
+# needed for correct text metrics. Copying the package entire is a few tens of
+# MB and removes a whole class of trace-miss failure.
+COPY --from=builder --chown=node:node /app/node_modules/pdfjs-dist ./node_modules/pdfjs-dist
+
 # The schema ships for reference and for the client to resolve against. Note it
 # does NOT make `prisma db push` runnable here - the CLI is a devDependency and
 # is deliberately not in this image. Schema changes are applied with the
