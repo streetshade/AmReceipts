@@ -113,4 +113,10 @@ ENV NODE_ENV=production
 # then never write to - a permissions failure that only appears on first write.
 RUN mkdir -p /app/data && chown -R node:node /app/data
 USER node
-CMD ["npx", "prisma", "db", "push"]
+# --skip-generate matters here. `db push` regenerates the client by default,
+# but node_modules was built as root in the builder stage while this runs as
+# `node`, so the regeneration fails with EACCES. It is also pointless work: the
+# client was already generated during the build. Prisma treats the failure as
+# non-fatal, so the schema still applies - it just prints a permission error
+# that makes a successful first deploy look broken.
+CMD ["npx", "prisma", "db", "push", "--skip-generate"]
