@@ -29,6 +29,12 @@ model User {
   // a config blob: these are per-person data that admins edit individually.
   m3SupplierNo String?
   m3EmployeeNo String?
+  // The claimant's cost centre, as an M3 accounting identity. This estate uses
+  // accounting dimension 3 for it (territory / admin cost centre). An explicit
+  // assignment rather than something derived from a group name: which cost
+  // centre a person's spend lands in is a finance decision, not a side effect
+  // of how they were grouped for approvals.
+  m3CostCentre String?
 
   // Group membership (basic users belong to a group overseen by an approver).
   groupId String?

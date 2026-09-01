@@ -393,6 +393,37 @@ switch is worth copying. The `FORCE_PRODUCTION` override alongside it is not: an
 override that silently redirects test traffic to production is the failure this
 connector's host allowlist exists to prevent.
 
+## What the accounting dimensions actually mean
+
+From the estate's own chart-of-accounts export. This was previously guesswork.
+
+| Dim | Holds | Shape |
+|---|---|---|
+| AIT1 | GL account | 5-digit numeric, level 1/2/3 rollup |
+| AIT2 | Facility / location | short codes that **repeat across sites** |
+| AIT3 | Cost centre / territory / admin | mixed alphanumeric |
+| AIT4 | Product / brand category | 3-digit numeric with rollup |
+| AIT5 | Cost element / charge type | alphabetic (freight, duty, funds) |
+| AIT6-7 | unused | — |
+
+Two consequences worth stating plainly.
+
+**A dimension value is meaningless without its company and division.** AIT2 codes
+repeat across sites and are disambiguated only by description; several identities
+are division-scoped. Validating a code without its scope validates nothing.
+
+**AIT3 is the claimant-facing dimension for expenses**, which is what
+`{{user.costCentre}}` is for. It was resolving to a hardcoded `null`, so every
+rule using it silently contributed nothing. It now comes from an explicit
+`User.m3CostCentre` — an assignment finance makes, not something inferred from
+which group a person was put in for approvals.
+
+Each identity also carries a blocked flag, valid-from/to dates, account group,
+balance/P&L/AR/AP flags, currency and division. None of that is validated yet:
+the length cap is still the only check, which is why a rule can name a blocked
+account, or one outside its validity window on the posting date, and only find
+out at posting time.
+
 ## The correction that matters most
 
 **A successful `Confirm` may mean *submitted*, not *posted*.**

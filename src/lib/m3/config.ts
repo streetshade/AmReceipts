@@ -31,7 +31,9 @@ export type DimensionId = (typeof DIMENSION_IDS)[number];
 // posting a literal "{{job.number}}" into the ledger.
 export const ROUTING_TOKENS = [
   "{{job.number}}",
-  "{{user.groupCode}}",
+  // Renamed from {{user.groupCode}}: it resolves to the approval group's NAME,
+  // and calling it a code invited rule authors to expect an M3 identity.
+  "{{user.groupName}}",
   "{{user.costCentre}}",
   "{{session.reasonType}}",
   "{{company.divi}}",
@@ -351,10 +353,23 @@ export const M3CompanyBinding = z
     // rule editor. Keys are dimension ids; AIT1 defaults to "Account".
     dimensionLabels: z.record(z.enum(DIMENSION_IDS), z.string().min(1)).default({}),
 
+    // Which dimensions this company actually books against. M3 offers seven;
+    // an installation typically uses fewer, and a rule that populates an unused
+    // one is a mistake M3 may accept silently. Defaults to all seven so an
+    // unconfigured binding behaves as before.
+    enabledDimensions: z.array(z.enum(DIMENSION_IDS)).min(1).default([...DIMENSION_IDS]),
+
     suspensePolicy: SuspensePolicy.default("block"),
     // Required only when the policy actually posts to suspense.
     suspenseAccount: z.string().min(1).optional(),
-    // Above this per-session amount, always block rather than post to suspense.
+    // Dimensions the suspense posting also needs. A suspense account is still
+    // an account: if this company makes AIT2 or AIT3 mandatory, an AIT1-only
+    // fallback is rejected by M3 - so the "safe" path would fail exactly when
+    // it is being relied on.
+    suspenseDimensions: PartialAccountingString.default({}),
+    // Above this amount on a SINGLE expense line, block rather than post to
+    // suspense. Per line, not per session: the comment used to say session and
+    // the code has always compared lines.
     suspenseLimitCents: z.number().int().min(0).default(0),
   })
   .superRefine((b, ctx) => {

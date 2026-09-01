@@ -40,7 +40,7 @@ export interface ExpenseFacts {
 /** Values available to {{token}} interpolation. */
 export interface RoutingContext {
   jobNumber: string | null;
-  userGroupCode: string | null;
+  userGroupName: string | null;
   userCostCentre: string | null;
   reasonType: string | null;
   divi: string;
@@ -191,8 +191,8 @@ export function resolveValue(value: string, ctx: RoutingContext): string | null 
   switch (value) {
     case "{{job.number}}":
       return blankToNull(ctx.jobNumber);
-    case "{{user.groupCode}}":
-      return blankToNull(ctx.userGroupCode);
+    case "{{user.groupName}}":
+      return blankToNull(ctx.userGroupName);
     case "{{user.costCentre}}":
       return blankToNull(ctx.userCostCentre);
     case "{{session.reasonType}}":
@@ -220,6 +220,8 @@ export function orderRules(rules: GlRoutingRule[]): GlRoutingRule[] {
 export interface ResolveOptions {
   cono: number;
   divi: string;
+  /** Dimensions this company books against. Anything else is refused. */
+  enabledDimensions?: readonly DimensionId[];
 }
 
 /**
@@ -251,11 +253,19 @@ export function resolveRouting(
     // Resolve every value BEFORE applying any of them. A rule that can only
     // half-resolve must contribute nothing at all, or it would leave a
     // partially-applied accounting string that no rule ever intended.
+    const enabled = opts.enabledDimensions ?? DIMENSION_IDS;
     const resolved: Partial<Record<DimensionId, string>> = {};
     let resolvable = true;
     for (const dim of DIMENSION_IDS) {
       const raw = rule.accounting[dim];
       if (raw === undefined) continue;
+      // A rule naming a dimension this company does not book against is a
+      // mistake, and M3 may accept it silently. Treated like an unresolvable
+      // token: the whole rule contributes nothing rather than part of itself.
+      if (!enabled.includes(dim)) {
+        resolvable = false;
+        break;
+      }
       const value = resolveValue(raw, ctx);
       if (value === null) {
         resolvable = false;

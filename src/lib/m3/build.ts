@@ -231,8 +231,10 @@ export async function buildPostingForSession(
 
   const ctx: RoutingContext = {
     jobNumber: session.job?.number ?? null,
-    userGroupCode: session.user.group?.name ?? null,
-    userCostCentre: null,
+    userGroupName: session.user.group?.name ?? null,
+    // Was hardcoded null, which made {{user.costCentre}} a token that could
+    // never resolve - every rule using it silently contributed nothing.
+    userCostCentre: session.user.m3CostCentre,
     reasonType: session.reasonType,
     divi: binding.divi,
   };
@@ -281,6 +283,7 @@ export async function buildPostingForSession(
     const routed = resolveRouting(config.routingRules, facts, ctx, {
       cono: binding.cono,
       divi: binding.divi,
+      enabledDimensions: binding.enabledDimensions,
     });
 
     let accounting: Record<string, string | undefined>;
@@ -294,14 +297,19 @@ export async function buildPostingForSession(
     } else if (binding.suspensePolicy === "post_and_flag" && binding.suspenseAccount) {
       // Policy decision, not a routing one: post it where an accountant can see
       // it rather than blocking the whole session.
-      if (binding.suspenseLimitCents > 0 && expense.amountCents > binding.suspenseLimitCents) {
+      // Magnitude, not signed value: a large CREDIT is just as much of a
+      // reason to stop and look as a large debit, and the signed comparison
+      // waved every negative amount straight through.
+      if (binding.suspenseLimitCents > 0 && Math.abs(expense.amountCents) > binding.suspenseLimitCents) {
         return {
           ok: false,
           reason: "no_matching_rule",
           detail: `"${expense.description}" (${(expense.amountCents / 100).toFixed(2)}) has no routing rule and exceeds the suspense limit`,
         };
       }
-      accounting = { "1": binding.suspenseAccount };
+      // The configured suspense dimensions ride along: an account is not
+      // postable on its own if this company makes other dimensions mandatory.
+      accounting = { ...binding.suspenseDimensions, "1": binding.suspenseAccount };
       viaSuspense = true;
       warnings.push(`"${expense.description}" fell through to the suspense account`);
     } else {
