@@ -357,18 +357,91 @@ the part worth reviewing:
 earlier. Populating it from OCR with user override is still to do; routing falls
 through to broader rules while it is null.
 
+## What the estate's own documentation established
+
+Reviewed against internal M3 documentation for this estate. Company names,
+hosts, database names and account codes are deliberately absent from this
+repository; what follows is the design consequence only.
+
+**There is already a substantial M3 write path**, and it is not in the systems
+anyone points you at first. It runs from Salesforce Apex over the M3 REST APIs:
+item master, order entry, customer master, plus a dozen custom list
+transactions. Anything new should look like it, not invent a second idiom.
+
+**The head → lines → confirm shape is the house pattern.** Order entry runs
+`AddBatchHead` → `AddBatchLine` → `Confirm`. The multi-step poster in
+`voucherPoster.ts` matches that, which is reassuring — but see the correction
+below, because matching the shape is not the same as matching the semantics.
+
+**Custom MI transactions here are declarative, over Information Categories** — a
+saved view of a table with selection fields. Every observed example is a
+`Lst_*` read. This corrects an earlier suggestion in this document: asking for a
+custom *deduplicating write* transaction is not the cheap ask it appeared to be.
+A custom *read* that answers "does a voucher with this reference exist?" is very
+much in reach, and is what reconciliation actually needs.
+
+**Five of the seven accounting dimensions are in use.** AIT1 carries the GL
+accounts under a level 1/2/3 rollup; AIT2–AIT5 are in use with AIT5 holding
+cost-element codes; AIT6 and AIT7 are unused. The chart export also carries a
+blocked flag, validity dates, account group, balance/P&L/AR/AP flags, currency
+and division — which is the master data the routing validation needs, and more
+than this connector currently checks.
+
+**Environment handling precedent:** matched PROD/TEST endpoint pairs, and a
+static kill switch to suppress outbound M3 calls during bulk loads. The kill
+switch is worth copying. The `FORCE_PRODUCTION` override alongside it is not: an
+override that silently redirects test traffic to production is the failure this
+connector's host allowlist exists to prevent.
+
+## The correction that matters most
+
+**A successful `Confirm` may mean *submitted*, not *posted*.**
+
+The estate's own documentation is explicit that order-entry failures are read
+back *after* `Confirm`, through a separate error-list transaction, and that
+"any new integration needs an equivalent, or failures are silent."
+
+This connector has no equivalent. `completeAttempt` treats a committing step's
+successful response as `posted`, which asserts more than the response supports.
+It is careful about transport ambiguity and naive about business ambiguity —
+a syntactically fine response to a call that was merely accepted for processing.
+
+Before posting is enabled for real, the lifecycle has to be observed end to end:
+
+1. Does the voucher MI's confirm mean durable success, or acceptance?
+2. Is there an error-readback transaction, and what is it correlated by — batch
+   number, job, user, company, timestamp? An unscoped list would attribute
+   somebody else's failure to this posting.
+3. Does an empty error list mean success, or "not processed yet"?
+4. What cleans up a batch staged but never confirmed?
+
+Until those are answered, `posted` should be read as "M3 accepted the call".
+
 ## Known gaps before this can post
 
 1. **`Receipt` has no expense category.** Merchant name alone is too weak: a
    supermarket receipt may be catering, materials or welfare. Needs a new field,
    inferred at OCR time with user override. Biggest accuracy lever in the design.
 2. **Master-data cache + validation** — via `MRS001MI` as above.
-3. **Posting queue + `M3Posting` table.** One row per session, unique on
-   `sessionId`, holding status (including `UNKNOWN`), the deterministic
-   reference, returned voucher number, error and attempt count.
+3. **Error readback after confirm** - the gap described above, and the reason
+   posting should stay unarmed.
 4. **Reversals.** Un-approving a posted session raises a reversal voucher,
    never a delete.
 5. **Period/balance checks** before the call, not after the rejection.
+6. **Dimension policy per company** - which of AIT1-7 are enabled, and their
+   real lengths and code shapes. The connector models seven because M3 does;
+   it does not yet stop a rule populating one this estate never uses.
+
+## What the replica is not for
+
+A SQL Server replica of M3 production is available and is what every reporting
+extract uses. It is deliberately not wired into this connector, and the reasons
+are stronger than preference: it is a *production* replica while this connector
+supports DEV/TST/PRD, so a test integration would read live state; replica lag
+makes "the reference is absent" unsafe evidence for retrying a financial write;
+and judging writes by API responses while reconciling against an eventually
+consistent database is a split brain. Reporting and human investigation are
+legitimate uses. Deciding whether to re-post is not.
 
 ## Where the grid facts came from
 

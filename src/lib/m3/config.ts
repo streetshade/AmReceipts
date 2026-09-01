@@ -45,9 +45,13 @@ const TOKEN_SET: ReadonlySet<string> = new Set(ROUTING_TOKENS);
 // mis-postings come from, and M3 dimension values are short enough that a
 // concatenated form is almost always a modelling mistake.
 //
-// The 24-character cap is a sanity bound only. Real per-dimension lengths and
-// validity are installation-controlled and are enforced against the cached M3
-// master data (see validateAgainstM3 in ./master-data), not here.
+// The 24-character cap is a sanity bound only, and it is currently the ONLY
+// check: real per-dimension lengths, code shapes, blocked flags and validity
+// dates are installation-controlled and are not yet validated anywhere. An
+// earlier version of this comment pointed at a ./master-data module that was
+// never written. Until it is, a rule can name an account that M3 will reject -
+// or worse, one that is blocked or out of its validity window on the posting
+// date, which fails at posting time rather than when the rule is saved.
 const DimensionValue = z
   .string()
   .trim()
