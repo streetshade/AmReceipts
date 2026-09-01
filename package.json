@@ -11,6 +11,7 @@
     "smoke:pdf": "tsx scripts/pdf-smoke.ts",
     "check:secretbox": "tsx scripts/secretbox-check.ts",
     "check:routing": "tsx scripts/routing-check.ts",
+    "check:masterdata": "tsx scripts/masterdata-check.ts",
     "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed.ts",
     "db:reset": "prisma db push --force-reset && npm run db:seed",

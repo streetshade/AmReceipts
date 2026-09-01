@@ -9,6 +9,13 @@
 import { prisma } from "../db";
 import type { M3BusinessConfig, M3CompanyBinding, M3PostingProfile } from "./config";
 import { resolveRouting, type ExpenseFacts, type RoutingContext, type RuleTraceEntry } from "./routing";
+import type { AccountingDateBasis } from "../integrations/registry";
+import {
+  validateAccountingString,
+  catalogueState,
+  DimensionCatalogue,
+  type DimensionCatalogue as Catalogue,
+} from "./masterData";
 import type { PreparedLine, PreparedPosting } from "./posting";
 
 export type BuildResult =
@@ -24,6 +31,7 @@ export type BuildResult =
         | "no_matching_rule"
         | "no_posting_profile"
         | "conflicting_posting_profiles"
+        | "invalid_master_data"
         | "inconsistent_receipt"
         | "nothing_to_post";
       detail: string;
@@ -109,9 +117,47 @@ function bindingFor(
  * admin can fix in configuration, and the caller records it against the session
  * so it shows up in the audit trail instead of a log nobody reads.
  */
+/**
+ * Which date the voucher is booked under.
+ *
+ * `receipt` uses the LATEST purchase date in the session. A voucher carries one
+ * date, and a session can hold receipts from several days: the latest is the
+ * earliest date by which every line had been incurred, and it avoids reaching
+ * back into a period that may already be closed. Receipts with no readable date
+ * are ignored rather than treated as today, and if none has a date at all the
+ * approval date is used - a posting still has to happen.
+ */
+export function accountingDateFor(
+  basis: AccountingDateBasis,
+  approvedAt: Date,
+  receiptDates: (Date | null)[],
+): { date: string; fellBack: boolean } {
+  const iso = (d: Date) => d.toISOString().slice(0, 10);
+  if (basis === "approval") return { date: iso(approvedAt), fellBack: false };
+
+  // A receipt cannot legitimately post-date its own approval, so anything
+  // later is a typo or an OCR misread. Ignored rather than trusted: taking it
+  // would book the voucher into a future period, and validate it against
+  // master-data validity windows that have not started.
+  const dated = receiptDates.filter(
+    (d): d is Date => d instanceof Date && !Number.isNaN(d.getTime()) && d.getTime() <= approvedAt.getTime(),
+  );
+  if (dated.length === 0) return { date: iso(approvedAt), fellBack: true };
+
+  const latest = dated.reduce((a, b) => (a.getTime() >= b.getTime() ? a : b));
+  return { date: iso(latest), fellBack: false };
+}
+
 export async function buildPostingForSession(
   sessionId: string,
   config: M3BusinessConfig,
+  {
+    accountingDateBasis = "approval",
+    // A synced snapshot of M3's accounting identities. Passed in rather than
+    // held on the business config so master data and business rules stay
+    // separable - and so this module does not import in a cycle.
+    catalogue = DimensionCatalogue.parse({}),
+  }: { accountingDateBasis?: AccountingDateBasis; catalogue?: Catalogue } = {},
 ): Promise<BuildResult> {
   const session = await prisma.expenseSession.findUnique({
     where: { id: sessionId },
@@ -426,11 +472,48 @@ export async function buildPostingForSession(
     }
   }
 
+  const accountingDate = accountingDateFor(
+    accountingDateBasis,
+    session.approvedAt ?? session.createdAt,
+    session.receipts.map((r) => r.purchaseDate),
+  );
+  if (accountingDate.fellBack) {
+    warnings.push("No receipt carried a date, so the approval date was used for the accounting period");
+  }
+
   const lines: PreparedLine[] = [...grouped.values()].map((g, index) => ({
     ...g.line,
     lineNo: index + 1,
     routedBy: [...g.rules],
   }));
+
+  // Master-data check, against the date this will actually be BOOKED under
+  // rather than today. An account that was valid when the rule was written may
+  // be blocked, expired or not yet open in the period this posting lands in.
+  const catState = catalogueState(catalogue);
+  if (catState !== "missing") {
+    const problems = lines.flatMap((l) =>
+      validateAccountingString(
+        catalogue,
+        { "1": l.dim1, "2": l.dim2, "3": l.dim3, "4": l.dim4, "5": l.dim5, "6": l.dim6, "7": l.dim7 },
+        {
+          divi: binding.divi,
+          accountingDate: accountingDate.date,
+          currency: binding.currency,
+          enabledDimensions: binding.enabledDimensions,
+        },
+      ).map((p) => `line ${l.lineNo}: ${p.detail}`),
+    );
+    if (problems.length > 0) {
+      return { ok: false, reason: "invalid_master_data", detail: problems.slice(0, 5).join("; ") };
+    }
+    if (catState === "stale") {
+      // Validation still RUNS on stale data - a month-old chart is usually
+      // still right, and is certainly better than no checking. The warning is
+      // so it does not rot indefinitely.
+      warnings.push("Accounting master data is stale; re-sync to be sure of these accounts");
+    }
+  }
 
   return {
     ok: true,
@@ -447,9 +530,7 @@ export async function buildPostingForSession(
       cono: String(binding.cono),
       divi: binding.divi,
       currency: binding.currency,
-      // The approval date is when the spend was authorised, which is the date
-      // finance expects to see it hit the period.
-      accountingDate: (session.approvedAt ?? session.createdAt).toISOString().slice(0, 10),
+      accountingDate: accountingDate.date,
       postingProfileKey: profile.key,
       documentType: profile.document,
       supplierNo,

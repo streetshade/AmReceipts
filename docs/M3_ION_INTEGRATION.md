@@ -424,6 +424,58 @@ the length cap is still the only check, which is why a rule can name a blocked
 account, or one outside its validity window on the posting date, and only find
 out at posting time.
 
+## Accounting date basis
+
+A connector-agnostic setting, on both PSA and M3, because it is an accounting
+policy and not an M3 detail:
+
+- **approval** — the date the expense was approved. One date per session,
+  always present.
+- **receipt** — the date the money was actually spent. A voucher carries one
+  date, so where receipts span days the **latest** is used: the earliest date
+  by which every line had been incurred, and it avoids reaching back into a
+  period that may be closed. A receipt dated after its own approval is a typo
+  or an OCR misread and is ignored rather than booking into a future period.
+
+Still open for finance: a session whose receipts genuinely straddle a period
+boundary is booked entirely into the later period. Correct accounting would
+split it. That is a policy decision, not a code one.
+
+## What the cost-element material did and did not contribute
+
+The estate's cost-element configuration is substantial — cost elements, costing
+operators, PPS280 control fields, cost models. Almost none of it belongs here,
+and saying why matters more than the parts that do.
+
+It governs **landed cost on purchase orders**: how freight, duty and adjustment
+funds are layered onto an item's cost. That is a different subsystem with
+different semantics from posting an approved expense. Borrowing its machinery
+would put purchase-order pricing logic inside an expense connector.
+
+**One thing does cross over.** The accounting control objects it lists are
+dimension values — the product categories on AIT4 and the charge types on AIT5.
+Those are exactly what a routing rule needs to name, and exactly what the
+connector could not previously validate.
+
+So the mapping is a **master-data catalogue** (`masterData.ts`), not a costing
+model. It mirrors an accounting-identity export — identity, dimension, division
+scope, blocked, valid from/to, currency, postable — and is checked against the
+date the voucher will be **booked under**, not today. An account valid when a
+rule was written may be blocked, expired or not yet open in the period a
+posting lands in.
+
+Two deliberate refusals to fail open:
+
+- **Stale data still validates.** An earlier version switched validation off
+  once a snapshot aged out, so known blocked accounts began passing with only a
+  warning. A month-old chart is usually still right, and certainly better than
+  no checking; it validates and says it is stale.
+- **A partial sync is not an authority on existence.** `completeFor` names the
+  dimensions a snapshot covers fully. Without it a truncated import would
+  reject every code it happened to miss.
+
+The catalogue ships empty. A customer's chart of accounts is their data.
+
 ## The correction that matters most
 
 **A successful `Confirm` may mean *submitted*, not *posted*.**

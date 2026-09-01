@@ -45,6 +45,47 @@ export interface IntegrationDef {
   secrets: z.ZodType<Record<string, unknown>>;
 }
 
+// ---------------------------------------------------------------------------
+// Settings every posting integration shares
+// ---------------------------------------------------------------------------
+
+/**
+ * Which date a posting is booked under.
+ *
+ * Deliberately connector-agnostic: it is an accounting policy, not an M3
+ * detail, and PSA has to answer the same question. Defined once and spread
+ * into both definitions so the two cannot drift.
+ *
+ *   approval  the date the expense was approved. One date per session, always
+ *             present, and the period is the one in which the spend was
+ *             authorised.
+ *   receipt   the date on the receipts themselves - the period in which the
+ *             money was actually spent. A voucher carries ONE date, so where a
+ *             session spans receipts from different days the LATEST is used:
+ *             it is the earliest date on which every line had been incurred,
+ *             and it avoids reaching back into a period that may be closed.
+ */
+export const AccountingDateBasis = z.enum(["approval", "receipt"]);
+export type AccountingDateBasis = z.infer<typeof AccountingDateBasis>;
+
+const SHARED_POSTING_FIELDS: FieldDef[] = [
+  {
+    name: "accountingDateBasis",
+    label: "Book postings under",
+    type: "select",
+    group: "GL posting",
+    options: [
+      { value: "approval", label: "Approval date — when the expense was approved" },
+      { value: "receipt", label: "Receipt date — when the money was spent (latest receipt in the session)" },
+    ],
+    help: "Which period a posting lands in. A session whose receipts span a period boundary uses the latest receipt date, so nothing is booked into a period that may already be closed.",
+  },
+];
+
+const SHARED_POSTING_CONFIG = {
+  accountingDateBasis: AccountingDateBasis.default("approval"),
+};
+
 // Shared: both systems are reached over https and neither should be given a
 // plaintext endpoint, however internal the network is said to be.
 const HttpsUrl = z
@@ -67,6 +108,7 @@ const psaWeb: IntegrationDef = {
     { name: "apiKey", label: "API key", type: "password", group: "Connection", secret: true, help: "Stored encrypted. Never shown again once saved." },
     { name: "defaultExpenseAccount", label: "Default expense account", type: "text", group: "GL posting", help: "Used when no rule matches." },
     { name: "defaultCostCentre", label: "Default cost centre", type: "text", group: "GL posting" },
+    ...SHARED_POSTING_FIELDS,
     { name: "syncExpenses", label: "Post approved expenses", type: "boolean", group: "Behaviour", help: "Off means configuration only - nothing is sent." },
   ],
   config: z.object({
@@ -75,6 +117,7 @@ const psaWeb: IntegrationDef = {
     defaultExpenseAccount: z.string().trim().default(""),
     defaultCostCentre: z.string().trim().default(""),
     syncExpenses: z.boolean().default(false),
+    ...SHARED_POSTING_CONFIG,
   }),
   // Trimmed BEFORE the length check: "   " passes .min(1) untrimmed, and would
   // be stored while the presence check (which trims) reported it as unset.
@@ -122,6 +165,7 @@ const m3Ion: IntegrationDef = {
     { name: "suspenseAccount", label: "Suspense account", type: "text", group: "GL posting", help: "Where unroutable spend lands, if the policy allows it rather than blocking." },
     { name: "voucherSeries", label: "Voucher series", type: "text", group: "GL posting" },
     { name: "famFunction", label: "FAM function", type: "text", group: "GL posting", placeholder: "e.g. AP10" },
+    ...SHARED_POSTING_FIELDS,
 
     { name: "maxrecs", label: "Max records per call", type: "number", group: "Advanced", help: "Must be positive. 0 means unbounded in m3api-rest and can spike M3 memory." },
     { name: "requestTimeoutMs", label: "Request timeout (ms)", type: "number", group: "Advanced" },
@@ -142,6 +186,7 @@ const m3Ion: IntegrationDef = {
     suspenseAccount: z.string().trim().default(""),
     voucherSeries: z.string().trim().default(""),
     famFunction: z.string().trim().default(""),
+    ...SHARED_POSTING_CONFIG,
     maxrecs: z.number().int().min(1).max(10_000).default(1000),
     requestTimeoutMs: z.number().int().min(1000).max(120_000).default(30_000),
     connectTimeoutMs: z.number().int().min(1000).max(60_000).default(10_000),
