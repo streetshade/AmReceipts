@@ -23,35 +23,35 @@ const facts: ExpenseFacts = {
 };
 const ctx: RoutingContext = {
   jobNumber: "J-100", userGroupName: "Field Team",
-  userCostCentre: "ADD3", reasonType: "travel", divi: "CA1",
+  userCostCentre: "CC-ADMIN", reasonType: "travel", divi: "D01",
 };
 const rule = (o: Partial<GlRoutingRule>): GlRoutingRule => ({
   id: "r", name: "r", enabled: true, precedence: 100, cono: null, divi: null,
   conditions: [], accounting: {}, terminal: false, ...o,
 } as GlRoutingRule);
 
-const base = { cono: 100, divi: "CA1" };
+const base = { cono: 100, divi: "D01" };
 
 // --- per-dimension first-write-wins ---------------------------------------
 {
   const r = resolveRouting([
-    rule({ id: "a", precedence: 100, accounting: { "1": "7210" } }),
-    rule({ id: "b", precedence: 200, accounting: { "1": "9999", "3": "ADD8" } }),
+    rule({ id: "a", precedence: 100, accounting: { "1": "60100" } }),
+    rule({ id: "b", precedence: 200, accounting: { "1": "69999", "3": "CC-FREIGHT" } }),
   ], facts, ctx, base);
   check("narrow rule keeps its account, broad rule still adds AIT3",
-    r.status === "routed" && r.accounting["1"] === "7210" && r.accounting["3"] === "ADD8",
+    r.status === "routed" && r.accounting["1"] === "60100" && r.accounting["3"] === "CC-FREIGHT",
     r.status === "routed" ? JSON.stringify(r.accounting) : r.status);
 }
 
 // --- the token that used to be dead ---------------------------------------
 {
-  const r = resolveRouting([rule({ accounting: { "1": "7210", "3": "{{user.costCentre}}" } })], facts, ctx, base);
+  const r = resolveRouting([rule({ accounting: { "1": "60100", "3": "{{user.costCentre}}" } })], facts, ctx, base);
   check("{{user.costCentre}} resolves from the claimant's assignment",
-    r.status === "routed" && r.accounting["3"] === "ADD3",
+    r.status === "routed" && r.accounting["3"] === "CC-ADMIN",
     r.status === "routed" ? JSON.stringify(r.accounting) : r.status);
 }
 {
-  const r = resolveRouting([rule({ accounting: { "1": "7210", "3": "{{user.costCentre}}" } })],
+  const r = resolveRouting([rule({ accounting: { "1": "60100", "3": "{{user.costCentre}}" } })],
     facts, { ...ctx, userCostCentre: null }, base);
   check("an unassigned cost centre skips the WHOLE rule, not just that field",
     r.status === "incomplete", r.status);
@@ -59,15 +59,15 @@ const base = { cono: 100, divi: "CA1" };
 
 // --- dimensions this company does not book against ------------------------
 {
-  const r = resolveRouting([rule({ accounting: { "1": "7210", "6": "NOPE" } })], facts, ctx,
+  const r = resolveRouting([rule({ accounting: { "1": "60100", "6": "NOPE" } })], facts, ctx,
     { ...base, enabledDimensions: ["1", "2", "3", "4", "5"] });
   check("a rule naming a disabled dimension contributes nothing",
     r.status === "incomplete", r.status === "routed" ? JSON.stringify(r.accounting) : r.status);
 }
 {
-  const r = resolveRouting([rule({ accounting: { "1": "7210", "5": "FRT" } })], facts, ctx,
+  const r = resolveRouting([rule({ accounting: { "1": "60100", "5": "FREIGHT" } })], facts, ctx,
     { ...base, enabledDimensions: ["1", "2", "3", "4", "5"] });
-  check("an enabled dimension is still written", r.status === "routed" && r.accounting["5"] === "FRT");
+  check("an enabled dimension is still written", r.status === "routed" && r.accounting["5"] === "FREIGHT");
 }
 
 // --- ordering is deterministic --------------------------------------------
