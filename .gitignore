@@ -24,3 +24,13 @@ prisma/dev.db-journal
 next-env.d.ts
 .vercel
 *.tsbuildinfo
+
+# Reference material and credentials must never enter this repository - it is
+# public. Belt and braces: the intended home for M3 documentation is OUTSIDE
+# the working tree entirely (see docs/M3_ION_INTEGRATION.md), but a stray copy
+# dropped in here should not be committable by accident.
+reference/
+m3-reference/
+*.ionapi
+*.pfx
+*.p12
