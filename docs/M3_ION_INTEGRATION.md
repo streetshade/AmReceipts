@@ -29,9 +29,59 @@
 > divisions, and whether per-line coding is expressible at all is untested. Both
 > are finance configuration questions.
 >
-> Everything below this box predates that discovery. It is kept because the
-> transport, queue, audit and safety work stands, but read its GL routing
-> sections as superseded.
+> **Resolution.** The routing engine stays — PSA Web does accept GL coding, so
+> `routing.ts` and `masterData.ts` remain load-bearing for that path. The M3 path
+> is now `aps450.ts`, which sends what APS450MI actually takes. The intent is to
+> **complete M3's configuration as designed** — populate the `AP50` rules — not
+> to contort the application around an install that was left unfinished.
+>
+> Everything below this box predates the discovery. The transport, queue, audit
+> and safety work stands; read the GL routing sections as applying to PSA rather
+> than to M3.
+
+## The M3 route, as it actually is
+
+`aps450.ts`. Sequence, with only one call that can leave a voucher behind:
+
+```
+LstInvBySupInv(SPYN, SUNO, SINO)   does this claim already exist?
+AddHead(SUNO, IVDT, SINO, CORI, ACDT, …)   -> INBN
+AddLine(INBN, RDTP, NLAM, VTA1, VTCD, CHGT) × N
+AddAddInfo(INBN, PEXN, PEXI)       receipt references, if configured
+ApproveInvoice(INBN)               only where the workflow expects it
+APS455MI/ValidByBatchNo(INBN)      ← the only irreversible call
+GetHead(INBN)                      IBHE / IBLE / VONO / YEA4
+GLS200MI/LstVoucherLines(DIVI, YEA4, VONO)   what M3 actually coded
+```
+
+**Idempotency stops being ours to enforce.** AP uniqueness is
+`SPYN`+`SUNO`+`SINO`+`INYR`, so a repeated claim is rejected by the ledger.
+That is stronger than anything this application can do alone, and it is why the
+reference must stay deterministic — the protection only works if a retry
+presents the same `SINO` the first attempt used.
+
+**The preflight does not answer "did it post?"** `AddHead` alone creates a
+batch, so an attempt that died before validation leaves one behind. A batch
+found under our `SINO` means *do not create a second header* and go and look —
+which `GetHead` then settles from `IBHE`/`IBLE`/`VONO`. Treating any batch as a
+completed posting would mark staged work as done.
+
+**Amounts are checked before dispatch.** With `TXIN = 0` the header total is
+gross and the lines are net, so nothing in the field mapping would catch a
+claim whose parts disagree — it would simply post a wrong number.
+
+### Still required before this can run in TST
+
+None of it is code:
+
+- `AP50` accounting rules — empty in most divisions. This is the blocker.
+- Whether per-line coding is expressible at all, or only per claimant. One test
+  claim with four lines differing by a single control field answers it.
+- Batch type, line type, VAT codes, the receipt information category, and
+  whether the approval step is part of the workflow.
+- A service account scoped to the transactions actually called, and
+  `AUTCHKMI/ChkAuthority` run against it — existence in the repository is not
+  permission, and permission is not ION exposure.
 
 
 Status: **design + config schema only.** No ION calls are made yet.

@@ -57,6 +57,54 @@ export function postingReference(sessionId: string): string {
   return PREFIX + body;
 }
 
+// ---------------------------------------------------------------------------
+// The two identifiers M3's AP route actually takes
+// ---------------------------------------------------------------------------
+
+/**
+ * SINO - supplier invoice number, A(24).
+ *
+ * This is the one that matters. AP uniqueness in M3 is SPYN+SUNO+SINO+INYR, so
+ * a claim re-posted with the same SINO is REJECTED BY THE LEDGER rather than
+ * duplicated. That is stronger than anything this application can enforce on
+ * its own, and it is why the reference has to be deterministic: the protection
+ * only works if a retry produces the same value the first attempt used.
+ */
+export function supplierInvoiceNo(sessionId: string): string {
+  // The 20-character reference fits A(24) with room to spare.
+  return postingReference(sessionId);
+}
+
+/**
+ * CORI - correlation id, A(36).
+ *
+ * Exists expressly to tie a voucher back to the system that fed it.
+ *
+ * Deliberately NOT shaped as a v4 UUID. An earlier version set the version and
+ * variant nibbles so it looked like one, which would have told every reader
+ * that the value was randomly generated when it is in fact derived - and the
+ * whole point is that it is reproducible from the session. It is an opaque,
+ * fixed-width, name-based identifier, and it looks like one.
+ */
+export function correlationId(sessionId: string): string {
+  const digest = createHash("sha256").update(`amreceipts:m3:correlation:${sessionId}`).digest();
+  let body = "";
+  let bits = 0;
+  let buf = 0;
+  let i = 0;
+  while (body.length < 32) {
+    if (bits < 5) {
+      buf = (buf << 8) | digest[i % digest.length];
+      bits += 8;
+      i++;
+    }
+    bits -= 5;
+    body += ALPHABET[(buf >> bits) & 31];
+  }
+  // "AMRC" + 32 characters = exactly the 36 the field allows.
+  return `AMRC${body}`;
+}
+
 /** Whether a string looks like one of our references. Used when reconciling
  *  values read back out of M3, which may have been padded or lower-cased. */
 export function isPostingReference(value: string): boolean {
