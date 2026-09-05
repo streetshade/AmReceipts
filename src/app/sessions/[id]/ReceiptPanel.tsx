@@ -6,6 +6,7 @@ import { formatCents, parseToCents } from "@/lib/money";
 
 export default function ReceiptPanel({ session, onChange }: { session: SessionDTO; onChange: () => void }) {
   const fileRef = useRef<HTMLInputElement | null>(null);
+  const uploadRef = useRef<HTMLInputElement | null>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -18,6 +19,12 @@ export default function ReceiptPanel({ session, onChange }: { session: SessionDT
     setUploading(false);
     if (fileRef.current) fileRef.current.value = "";
     if (res.ok) {
+      // A scanned PDF or a failed OCR run still returns 201 with the receipt
+      // stored and a `message` explaining what to do. Treating every 2xx as
+      // silent success threw that explanation away, leaving the user with a
+      // blank receipt and no idea why.
+      const data = await res.json().catch(() => ({}));
+      if (data.status === "failed" && data.message) setError(data.message);
       onChange();
     } else {
       const data = await res.json().catch(() => ({}));
@@ -29,6 +36,9 @@ export default function ReceiptPanel({ session, onChange }: { session: SessionDT
     <div className="space-y-4">
       {/* Capture */}
       <div className="card p-4">
+        {/* Two inputs rather than one. `capture` forces the camera on mobile,
+            which makes choosing a saved PDF impossible, and accept="image/*"
+            would hide PDFs from the picker anyway. */}
         <input
           ref={fileRef}
           type="file"
@@ -38,13 +48,32 @@ export default function ReceiptPanel({ session, onChange }: { session: SessionDT
           onChange={(e) => {
             const f = e.target.files?.[0];
             if (f) upload(f);
+            e.target.value = "";
           }}
         />
-        <button className="btn-primary w-full" disabled={uploading} onClick={() => fileRef.current?.click()}>
-          {uploading ? "Processing receipt…" : "📷 Scan a receipt"}
-        </button>
+        <input
+          ref={uploadRef}
+          type="file"
+          accept="image/*,application/pdf,.pdf"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) upload(f);
+            // Reset so picking the same file twice still fires a change.
+            e.target.value = "";
+          }}
+        />
+        <div className="grid gap-2 sm:grid-cols-2">
+          <button className="btn-primary" disabled={uploading} onClick={() => fileRef.current?.click()}>
+            {uploading ? "Processing…" : "📷 Scan a receipt"}
+          </button>
+          <button className="btn-secondary" disabled={uploading} onClick={() => uploadRef.current?.click()}>
+            {uploading ? "Processing…" : "📄 Upload a file"}
+          </button>
+        </div>
         <p className="mt-2 text-center text-xs text-muted">
-          Take a photo of a receipt. It’s OCR-processed for merchant, date, line items and payment method.
+          Photograph a paper receipt, or upload a PDF from an online purchase. PDFs are read directly from
+          their text, so the details come out exact rather than guessed.
         </p>
         {error && <p className="mt-2 text-center text-sm text-red-300">{error}</p>}
       </div>
@@ -126,10 +155,19 @@ function ReceiptCard({ receipt, onChange }: { receipt: ReceiptDTO; onChange: () 
   return (
     <div className="card overflow-hidden">
       <div className="flex gap-4 p-4">
-        {receipt.imagePath && (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={receipt.imagePath} alt="Receipt" className="h-24 w-20 shrink-0 rounded object-cover" />
-        )}
+        {receipt.imagePath &&
+          (receipt.imagePath.toLowerCase().endsWith(".pdf") ? (
+            <a
+              href={receipt.imagePath}
+              className="flex h-24 w-20 shrink-0 flex-col items-center justify-center rounded border border-line bg-panel2 text-center text-xs text-muted hover:text-brand"
+            >
+              <span className="text-2xl" aria-hidden>📄</span>
+              PDF
+            </a>
+          ) : (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={receipt.imagePath} alt="Receipt" className="h-24 w-20 shrink-0 rounded object-cover" />
+          ))}
         <div className="min-w-0 flex-1">
           {!editing ? (
             <>

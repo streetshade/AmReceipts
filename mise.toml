@@ -1,0 +1,28 @@
+# Runtime pinning for this project.
+#
+# Why mise rather than nvm: nvm is a shell function sourced from your profile,
+# so it exists only in interactive shells. Anything that runs a non-interactive
+# shell - a Makefile, a git hook, an editor task, an agent's shell tool - sees
+# no node at all, which looks exactly like "node is not installed". mise puts
+# real shim binaries on PATH, so every one of those contexts resolves the same
+# version this file names.
+#
+#   mise install     once per machine, installs the versions below
+#   mise current     shows what is active here
+#
+# Node dependencies never needed isolating - npm already installs into this
+# project's own node_modules. What needed pinning was the RUNTIME, so that
+# twenty projects on one machine can want twenty different versions of node
+# without any of them fighting.
+
+[tools]
+# 20 LTS: matches the CI workflow (actions/setup-node) and the NodeSource
+# install in docs/DEPLOYMENT.md, so local, CI and the server agree. Keep these
+# three in step - a version that only differs in production is a version that
+# only fails in production.
+node = "20"
+
+# No [env] block on purpose. Setting NODE_ENV here would apply to EVERY command
+# run in this directory - including an ad-hoc production build - which is a
+# surprise nobody needs. Next already defaults correctly per command, and real
+# configuration belongs in .env, which is gitignored.

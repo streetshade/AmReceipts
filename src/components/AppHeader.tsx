@@ -17,6 +17,7 @@ export default function AppHeader({ userName, role = "user" }: { userName: strin
   const links = [
     { href: "/dashboard", label: "Sessions" },
     { href: "/reports", label: "Reports" },
+    { href: "/postings", label: "Postings" },
     // Approvers (and admins) get the approvals queue.
     ...(role === "approver" || role === "admin" ? [{ href: "/approvals", label: "Approvals" }] : []),
     // Admins get account administration.

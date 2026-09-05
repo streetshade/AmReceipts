@@ -11,6 +11,10 @@ for reporting.
 
 - **Accounts** — email/password auth with signed session cookies.
 - **Sessions** — group receipts and scanned items for one trip/errand.
+- **PDF receipts** — upload the PDF an online purchase gives you instead of photographing
+  a screen. PDFs carry a real text layer, so the details are read directly rather than
+  OCR'd, which makes them more accurate than any photo and works on every OCR provider
+  (including the offline stub). A scanned PDF with no text layer falls back to manual entry.
 - **Receipt scanning** — capture from the phone camera; OCR extracts merchant, date,
   subtotal/tax/total, line items and payment method. Everything is user-verifiable/editable.
 - **Payment methods** — the method read off a receipt (e.g. `VISA ****1234`) is reconciled
@@ -105,6 +109,26 @@ configuration placeholder. The first example, **PSA Web**, stores base URL / API
 company ID / sync flag and an enabled toggle. It is a stub: config is persisted, but no
 external sync is performed yet.
 
+## Local toolchain
+
+Node is pinned in `mise.toml`. [mise](https://mise.jdx.dev) is preferred over
+`nvm` for a specific reason: `nvm` is a shell function sourced from your
+profile, so it exists only in interactive shells — editor tasks, git hooks and
+any tooling that spawns a non-interactive shell see no node at all, which looks
+exactly like "node is not installed". mise installs real shims on `PATH`, so
+every context resolves the same version.
+
+```bash
+brew install mise                       # once
+echo 'eval "$(mise activate zsh)"' >> ~/.zshrc
+mise install                            # in this repo: installs Node 20
+npm ci
+```
+
+Nothing here is global: npm installs into this project's own `node_modules`, so
+any number of projects coexist without conflicting. What needed pinning was the
+runtime, which is all `mise.toml` does.
+
 ## Switching to real OCR / online barcode lookup
 
 In `.env`:
@@ -140,6 +164,7 @@ A full walkthrough (nginx + TLS, systemd, PostgreSQL, Google Vision) is in
 prisma/schema.prisma          Data model (User, PaymentMethod, Job, ExpenseSession,
                               Receipt, LineItem, Product, ScannedItem)
 prisma/seed.ts                Seeded barcode catalogue + demo user
+src/lib/providers/pdf.ts      PDF text-layer extraction + invoice-shaped parsing
 src/lib/providers/ocr.ts      OCR provider interface, receipt-text parser, stub + tesseract
 src/lib/providers/barcode.ts  Barcode provider interface, local + upcitemdb
 src/lib/matching.ts           Scanned-item ↔ line-item reconciliation

@@ -1,0 +1,94 @@
+# Local and single-server deployment.
+#
+#   docker compose up --build
+#
+# Defaults to SQLite so this works with the committed schema and no further
+# setup. For anything with more than one user, switch to Postgres - see the
+# commented service below and the note in docs/DEPLOYMENT.md.
+#
+# FIRST DEPLOY - the database starts empty and `up` does NOT create it:
+#
+#   export AUTH_SECRET=$(openssl rand -hex 32)
+#   docker compose --profile migrate run --rm migrate   # create the schema
+#   docker compose up --build -d                        # start the app
+#
+# Re-run the migrate line after any schema change. It is deliberately a
+# separate step rather than something the app does on boot: a container that
+# migrates on start will race its own replicas the first time you run two.
+
+services:
+  app:
+    build:
+      context: .
+      # Named explicitly: `migrate` comes after `runner` in the Dockerfile, and
+      # a bare `build: .` would take the LAST stage - silently shipping an
+      # image that applies the schema and exits instead of serving the app.
+      target: runner
+    restart: unless-stopped
+    ports:
+      # Host port is configurable so the container can run alongside a local
+      # `npm run dev`, which also wants 3000. Without this, whichever started
+      # first wins and the other silently is not what you are talking to.
+      - "${APP_PORT:-3000}:3000"
+    environment:
+      # SQLite lives on the `data` volume, NOT in the image - a database baked
+      # into an image is lost on every redeploy.
+      DATABASE_URL: "file:/app/data/amreceipts.db"
+      # Generate with: openssl rand -hex 32
+      AUTH_SECRET: "${AUTH_SECRET:?set AUTH_SECRET in .env or the environment}"
+      CRON_SECRET: "${CRON_SECRET:-}"
+      # Encrypts integration secrets at rest. Falls back to a key derived from
+      # AUTH_SECRET when unset - see .env.example for the caveat.
+      CONFIG_ENCRYPTION_KEY: "${CONFIG_ENCRYPTION_KEY:-}"
+      OCR_PROVIDER: "${OCR_PROVIDER:-stub}"
+      BARCODE_PROVIDER: "${BARCODE_PROVIDER:-upcitemdb}"
+      UPCITEMDB_API_KEY: "${UPCITEMDB_API_KEY:-}"
+      # M3 integration. Empty by default: the integration stays inactive until
+      # it is configured, and refuses to post regardless until it is armed.
+      M3_ION_SECRETS: "${M3_ION_SECRETS:-}"
+      M3_PROD_HOSTS: "${M3_PROD_HOSTS:-}"
+    volumes:
+      # Receipt uploads and the database are the only writable state. Both must
+      # outlive the container or a redeploy silently destroys user data.
+      - uploads:/app/public/uploads
+      - data:/app/data
+
+  # One-shot schema application. Built from the `migrate` stage, which carries
+  # the Prisma CLI the runtime image deliberately omits.
+  #
+  #   docker compose --profile migrate run --rm migrate
+  #
+  # Needed on first deploy (the database starts empty) and after any schema
+  # change. Uses the same DATABASE_URL and volume as the app.
+  migrate:
+    build:
+      context: .
+      target: migrate
+    profiles: ["migrate"]
+    environment:
+      DATABASE_URL: "file:/app/data/amreceipts.db"
+    volumes:
+      - data:/app/data
+
+  # Uncomment for Postgres, and change `provider` in prisma/schema.prisma to
+  # "postgresql" - Prisma will not accept a postgres URL against the sqlite
+  # provider. Then re-run `npx prisma db push`.
+  #
+  # postgres:
+  #   image: postgres:16-alpine
+  #   restart: unless-stopped
+  #   environment:
+  #     POSTGRES_USER: amreceipts
+  #     POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}"
+  #     POSTGRES_DB: amreceipts
+  #   volumes:
+  #     - pgdata:/var/lib/postgresql/data
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U amreceipts"]
+  #     interval: 10s
+  #     retries: 5
+
+volumes:
+  uploads:
+  data:
+  # pgdata:

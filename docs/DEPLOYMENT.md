@@ -1,5 +1,68 @@
 # Deploying AmReceipts on Debian
 
+> **Two ways to deploy.** The Docker path below is the recommended one for a new
+> server: one image, no apt drift, and the thing CI builds is the thing that
+> runs. The manual apt walkthrough that follows it still works and is what the
+> existing deployment uses — keep it if you are already running that way.
+
+## Docker (recommended)
+
+Prerequisites on the AWS box: Docker Engine and the Compose plugin. On Ubuntu:
+
+```bash
+sudo apt update && sudo apt install -y ca-certificates curl
+curl -fsSL https://get.docker.com | sudo sh
+sudo usermod -aG docker $USER    # log out and back in
+```
+
+Then, from a checkout of this repo:
+
+```bash
+export AUTH_SECRET=$(openssl rand -hex 32)
+export CRON_SECRET=$(openssl rand -hex 32)
+
+docker compose --profile migrate run --rm migrate   # create the schema
+docker compose up --build -d                        # start the app
+```
+
+The database starts empty and `up` does **not** create it, so the migrate line
+is required on first deploy and after any schema change. It is a separate step
+rather than something the app does on boot because a container that migrates on
+start races its own replicas the first time you run two.
+
+Put nginx and certbot in front exactly as in the manual walkthrough below —
+proxy to `127.0.0.1:3000` instead of the systemd service.
+
+### What persists
+
+Two named volumes, and nothing else survives a redeploy:
+
+| Volume | Holds |
+|---|---|
+| `uploads` | receipt images and PDFs (`/app/public/uploads`) |
+| `data` | the SQLite database (`/app/data`) |
+
+Back these up. An image rebuild discards everything outside them.
+
+### Postgres
+
+SQLite is the default so `docker compose up` works with the committed schema.
+For more than a handful of users, uncomment the `postgres` service in
+`docker-compose.yml`, change `provider` in `prisma/schema.prisma` to
+`"postgresql"`, point `DATABASE_URL` at it, and re-run the migrate step.
+
+### Updating
+
+```bash
+git pull
+docker compose --profile migrate run --rm migrate   # only if the schema changed
+docker compose up --build -d
+```
+
+---
+
+## Manual install (apt + systemd)
+
 Target: Debian 12 (bookworm) or newer, running the app behind nginx with TLS,
 managed by systemd, using PostgreSQL and Google Cloud Vision OCR.
 

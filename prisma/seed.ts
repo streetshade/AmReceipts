@@ -276,7 +276,18 @@ async function main() {
     create: { userId: user.id, number: "JOB-1001", name: "Downtown site fit-out" },
   });
 
-  // Admin-managed integration placeholder (PSA Web) — config stub only.
+  // The lock row for the expense-posting group. Created up front so enabling
+  // an integration only ever takes a row lock, never races to insert one.
+  await prisma.integrationGroup.upsert({
+    where: { group: "expense_posting" },
+    update: {},
+    create: { group: "expense_posting", activeKey: null },
+  });
+
+  // Business-system integrations. Both start disabled and empty: they are
+  // mutually exclusive (one expense-posting system at a time) and neither can
+  // send anything until an admin configures it. `update: {}` so re-seeding a
+  // live database never overwrites real configuration.
   await prisma.integration.upsert({
     where: { key: "psa_web" },
     update: {},
@@ -284,7 +295,30 @@ async function main() {
       key: "psa_web",
       name: "PSA Web",
       enabled: false,
-      config: JSON.stringify({ baseUrl: "", apiKey: "", companyId: "", syncExpenses: false }),
+      config: JSON.stringify({
+        baseUrl: "", companyId: "",
+        defaultExpenseAccount: "", defaultCostCentre: "",
+        syncExpenses: false,
+      }),
+    },
+  });
+
+  await prisma.integration.upsert({
+    where: { key: "m3_ion" },
+    update: {},
+    create: {
+      key: "m3_ion",
+      name: "Infor M3 (ION API)",
+      enabled: false,
+      config: JSON.stringify({
+        baseUrl: "", tokenUrl: "", clientId: "",
+        authMode: "oauth_password", environment: "DEV",
+        // Both safety flags in their refusing position.
+        dryRun: true, armed: false, verifyTls: true,
+        cono: "", divi: "", currency: "",
+        suspenseAccount: "", voucherSeries: "", famFunction: "",
+        maxrecs: 1000, requestTimeoutMs: 30000, connectTimeoutMs: 10000,
+      }),
     },
   });
 
