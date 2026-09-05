@@ -1,5 +1,39 @@
 # M3 / ION API integration — configuration design
 
+> ## ⚠ This document's central design is contradicted by the M3 API repository
+>
+> Verified against the estate's API repository export (706 programs, 5,052
+> transactions) and a read-only production extract, September 2026.
+>
+> **`APS450MI` is the only supplier-invoice route with a write API**, and
+> neither `AddHead` (63 inputs) nor `AddLine` (37 inputs) accepts an account, a
+> cost centre, or any of AIT1–AIT7. The GL coding is derived *inside M3* from
+> FAM accounting rules on event `AP50` plus an invoice accounting template
+> (`REGR`) on the supplier record. **The caller never chooses the accounting
+> string.**
+>
+> That invalidates the "two axes" model below, the routing rule engine, the
+> master-data catalogue and the per-line dimension storage — for this route.
+> They are not wrong as M3 concepts; they are simply not what this API accepts.
+>
+> Three things get *easier*:
+>
+> - **Idempotency is native.** AP uniqueness is `SPYN`+`SUNO`+`SINO`+`INYR`, so
+>   a re-posted claim with the same `SINO` A(24) is rejected rather than
+>   duplicated. `CORI` A(36) exists expressly to correlate with a feeding system.
+> - **The accounting date is a real field** — `ACDT` D(10) on `AddHead`.
+> - **What posted can be read back**: `GLS200MI/LstVoucherLines(DIVI, YEA4,
+>   VONO)`, with batch errors in `IBHE`/`IBLE` via `APS450MI/GetHead`.
+>
+> The real blocker is not code. `AP50`'s accounting rules are empty in most
+> divisions, and whether per-line coding is expressible at all is untested. Both
+> are finance configuration questions.
+>
+> Everything below this box predates that discovery. It is kept because the
+> transport, queue, audit and safety work stands, but read its GL routing
+> sections as superseded.
+
+
 Status: **design + config schema only.** No ION calls are made yet.
 Schema lives in `src/lib/m3/config.ts`.
 
