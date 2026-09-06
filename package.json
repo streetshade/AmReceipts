@@ -13,6 +13,7 @@
     "check:routing": "tsx scripts/routing-check.ts",
     "check:masterdata": "tsx scripts/masterdata-check.ts",
     "check:aps450": "tsx scripts/aps450-check.ts",
+    "check:tax": "tsx scripts/tax-check.ts",
     "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed.ts",
     "db:reset": "prisma db push --force-reset && npm run db:seed",

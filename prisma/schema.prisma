@@ -192,6 +192,16 @@ model Receipt {
   // Raw method string read from the receipt before reconciliation, e.g. "VISA ****1234"
   paymentRaw      String?
 
+  // Where the receipt was issued. The same technician crosses the US/Canada
+  // border in a day, so this is per RECEIPT rather than per user or per visit.
+  // ISO country, and the province or state.
+  country String?
+  region  String?
+
+  // Tax components, itemised. `tax` above stays the total, because everything
+  // that reads it still works; these break it down.
+  taxes ReceiptTax[]
+
   // What this spend was FOR: meals, fuel, accommodation, materials, ...
   // Merchant name alone is too weak a routing signal - a supermarket receipt
   // may be catering, materials or welfare - so GL routing leans on this.
@@ -207,6 +217,32 @@ model Receipt {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+// One tax line on a receipt - GST, PST, HST, QST or a US sales tax.
+//
+// A single `tax` integer cannot carry a Canadian receipt: the office claims
+// input tax credits on GST and HST but not on PST, so they have to be told
+// apart. Splitting them here is what makes that possible, and it happens to
+// match what M3 takes on the AP line, where VTA1 and VTA2 are two separate VAT
+// amounts against a VAT code.
+model ReceiptTax {
+  id        String  @id @default(cuid())
+  receiptId String
+  receipt   Receipt @relation(fields: [receiptId], references: [id], onDelete: Cascade)
+
+  // "GST" | "PST" | "HST" | "QST" | "SALES"
+  code String
+  // Basis points, so 5% is 500. Integer for the same reason money is: a rate
+  // that reads back differently from how it was entered is a support call.
+  rateBasisPoints Int?
+  // Cents. These must sum to Receipt.tax.
+  amount Int
+
+  createdAt DateTime @default(now())
+
+  // One row per tax type per receipt.
+  @@unique([receiptId, code])
 }
 
 model LineItem {
