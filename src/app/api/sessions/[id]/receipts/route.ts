@@ -28,9 +28,27 @@ export const POST = handler(async (req: Request, { params }: Params) => {
 
   const form = await req.formData();
   const file = form.get("image");
+  // Minted on the device at the moment of capture. Optional, so the classic
+  // upload path is unaffected.
+  const captureIdRaw = form.get("captureId");
+  const captureId = typeof captureIdRaw === "string" && captureIdRaw.trim() !== "" ? captureIdRaw.trim() : null;
   if (!(file instanceof File)) return error("An image or PDF file is required", 422);
   if (file.size === 0) return error("The file is empty", 422);
   if (file.size > MAX_BYTES) return error("File exceeds the 12MB limit", 413);
+
+  // Answered before anything is written. A retry after a lost response finds
+  // the receipt its first attempt created and returns it, rather than adding a
+  // duplicate nobody asked for.
+  if (captureId) {
+    // Scoped to THIS session, which the caller has already been shown to own.
+    // A bare lookup on the unique column would hand back any receipt whose
+    // capture id somebody could guess or replay, including another user's.
+    const already = await prisma.receipt.findFirst({
+      where: { captureId, sessionId: session.id },
+      include: { lineItems: true, paymentMethod: true },
+    });
+    if (already) return json({ receipt: already, duplicate: true }, 200);
+  }
 
   const bytes = Buffer.from(await file.arrayBuffer());
 
@@ -56,7 +74,7 @@ export const POST = handler(async (req: Request, { params }: Params) => {
   // dragging in a rasteriser.
   const failedReceipt = async (message: string) => {
     const failed = await prisma.receipt.create({
-      data: { sessionId: session.id, imagePath, status: "failed" },
+      data: { sessionId: session.id, imagePath, status: "failed", captureId },
     });
     return json({ id: failed.id, status: "failed", message }, 201);
   };
@@ -83,9 +101,10 @@ export const POST = handler(async (req: Request, { params }: Params) => {
 
   const paymentMethodId = await reconcilePaymentMethod(userId, parsed.paymentRaw);
 
-  const receipt = await prisma.receipt.create({
+  const receipt = await createReceiptOnce(session.id, captureId, {
     data: {
       sessionId: session.id,
+      captureId,
       imagePath,
       merchant: parsed.merchant,
       purchaseDate: parsed.purchaseDate ? new Date(parsed.purchaseDate) : null,
@@ -109,3 +128,31 @@ export const POST = handler(async (req: Request, { params }: Params) => {
 
   return json({ receipt }, 201);
 });
+
+/**
+ * Create the receipt, tolerating a concurrent request that got there first.
+ *
+ * The pre-flight lookup narrows the window but cannot close it: two retries of
+ * the same capture can both find nothing and both proceed. The unique index
+ * then rejects the second, and without this it would surface as a 500 for a
+ * request whose work had in fact succeeded.
+ */
+async function createReceiptOnce(
+  sessionId: string,
+  captureId: string | null,
+  args: Parameters<typeof prisma.receipt.create>[0],
+) {
+  try {
+    return await prisma.receipt.create(args);
+  } catch (e) {
+    const code = (e as { code?: string }).code;
+    if (code === "P2002" && captureId) {
+      const existing = await prisma.receipt.findFirst({
+        where: { captureId, sessionId },
+        include: { lineItems: true, paymentMethod: true },
+      });
+      if (existing) return existing;
+    }
+    throw e;
+  }
+}

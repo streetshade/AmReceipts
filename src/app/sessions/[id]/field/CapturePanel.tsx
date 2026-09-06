@@ -18,7 +18,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { formatCents } from "@/lib/money";
-import { enqueue, flush, listPending, offlineQueueAvailable } from "@/lib/offlineQueue";
+import { enqueue, flush, listPending, offlineQueueAvailable, isPermanentRejection } from "@/lib/offlineQueue";
 
 /**
  * 2 -> 1 -> fire, at 550ms: 1.65s nominal.
@@ -36,7 +36,14 @@ const REARM_MS = 1400;
 
 interface Shot {
   id: string;
-  /** Object URL for the thumbnail. Revoked on unmount. */
+  /**
+   * A small JPEG data URL, not an object URL over the full photo.
+   *
+   * Holding the full-resolution Blob alive for every thumbnail exhausted phone
+   * memory across a long burst, and object URLs then had to be revoked at
+   * exactly the right moment or thumbnails went blank. A 140px preview costs a
+   * few kilobytes and has no lifecycle at all.
+   */
   preview: string;
   status: "uploading" | "read" | "queued" | "failed";
   totalCents: number | null;
@@ -66,6 +73,9 @@ export default function CapturePanel({
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [streaming, setStreaming] = useState(false);
   const [queued, setQueued] = useState(0);
+  // Object URLs for files chosen through the picker. Camera shots use data
+  // URLs and need no cleanup; these do.
+  const pickedUrls = useRef<string[]>([]);
 
   // Kept in refs, not state: the analysis loop runs every frame and must not
   // re-render the component or capture a stale closure.
@@ -99,6 +109,10 @@ export default function CapturePanel({
           } catch {
             // Autoplay refused. Claiming `streaming` here would leave the
             // shutter pressing a dead video instead of offering the picker.
+            // The camera is released now rather than at unmount, so the phone
+            // stops showing a recording indicator for a feed nobody can see.
+            stream?.getTracks().forEach((t) => t.stop());
+            stream = null;
             if (!cancelled) setCameraError("Camera could not start — use the button below to choose a photo.");
             return;
           }
@@ -119,18 +133,45 @@ export default function CapturePanel({
 
   // --- upload ------------------------------------------------------------
   const upload = useCallback(
-    async (blob: Blob, filename: string) => {
+    async (blob: Blob, filename: string, preview: string) => {
       const id = crypto.randomUUID();
-      const preview = URL.createObjectURL(blob);
-    previews.current.push(preview);
       setShots((prev) => [...prev, { id, preview, status: "uploading", totalCents: null, merchant: null }]);
 
       const form = new FormData();
       form.append("image", blob, filename);
+      // Minted here, at the shutter, and reused by every retry of this same
+      // capture. Without it the server's deduplication has nothing to match on
+      // and a lost response still produces a second receipt.
+      form.append("captureId", id);
       try {
         const res = await fetch(`/api/sessions/${sessionId}/receipts`, { method: "POST", body: form });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
+          // A server that is busy, rate-limiting or momentarily broken is not a
+          // reason to lose a receipt. Only a permanent refusal is.
+          if (!isPermanentRejection(res.status) && offlineQueueAvailable()) {
+            try {
+              const { evicted } = await enqueue({ id, sessionId, filename, blob, capturedAt: Date.now() });
+              setShots((p) =>
+                p.map((s) =>
+                  s.id === id
+                    ? {
+                        ...s,
+                        status: "queued",
+                        message:
+                          evicted > 0
+                            ? `Saved — but ${evicted} older photo${evicted === 1 ? "" : "s"} had to be dropped`
+                            : "Saved — will try again",
+                      }
+                    : s,
+                ),
+              );
+              void refreshQueued();
+              return;
+            } catch {
+              /* fall through */
+            }
+          }
           setShots((p) => p.map((s) => (s.id === id ? { ...s, status: "failed", message: data.error ?? "Upload failed" } : s)));
           return;
         }
@@ -157,8 +198,22 @@ export default function CapturePanel({
         // The paper receipt is already in a bin by now.
         if (offlineQueueAvailable()) {
           try {
-            await enqueue({ id, sessionId, filename, blob, capturedAt: Date.now() });
-            setShots((p) => p.map((s) => (s.id === id ? { ...s, status: "queued", message: "Saved — sends when you get signal" } : s)));
+            const { evicted } = await enqueue({ id, sessionId, filename, blob, capturedAt: Date.now() });
+            setShots((p) =>
+              p.map((s) =>
+                s.id === id
+                  ? {
+                      ...s,
+                      status: "queued",
+                      message:
+                        evicted > 0
+                          ? `Saved — but ${evicted} older photo${evicted === 1 ? "" : "s"} had to be dropped`
+                          : "Saved — sends when you get signal",
+                    }
+                  : s,
+              ),
+            );
+            void refreshQueued();
             return;
           } catch {
             /* fall through to the honest failure below */
@@ -189,6 +244,14 @@ export default function CapturePanel({
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     canvas.getContext("2d")?.drawImage(video, 0, 0);
+    // A small preview, made while the full frame is still on the canvas.
+    const thumb = document.createElement("canvas");
+    const scale = 140 / canvas.width;
+    thumb.width = 140;
+    thumb.height = Math.round(canvas.height * scale);
+    thumb.getContext("2d")?.drawImage(canvas, 0, 0, thumb.width, thumb.height);
+    const preview = thumb.toDataURL("image/jpeg", 0.6);
+
     const blob = await new Promise<Blob | null>((r) => canvas.toBlob(r, "image/jpeg", 0.9));
 
     // The shutter is free again as soon as the frame exists. Holding it through
@@ -197,7 +260,16 @@ export default function CapturePanel({
     armedAt.current = Date.now();
     busy.current = false;
 
-    if (blob) void upload(blob, `receipt-${Date.now()}.jpg`);
+    if (blob) {
+      void upload(blob, `receipt-${Date.now()}.jpg`, preview);
+    } else {
+      // toBlob returning null is rare but it is a LOST RECEIPT, and silence
+      // here would mean the user believes they photographed something.
+      setShots((p) => [
+        ...p,
+        { id: crypto.randomUUID(), preview, status: "failed", totalCents: null, merchant: null, message: "Photo failed — take it again" },
+      ]);
+    }
   }, [upload]);
 
   // --- stability watch ---------------------------------------------------
@@ -262,32 +334,61 @@ export default function CapturePanel({
       }
       // Derived from the clock, so a stalled tick shortens the display rather
       // than extending the countdown past its budget.
-      setHold(Math.max(1, Math.ceil(left / TICK_MS) - 1));
+      // Two ticks showing "2", one showing "1". The previous formula spent
+      // 550ms on 2 and 1100ms on 1, which read as a stall.
+      setHold(Math.min(2, Math.max(1, Math.ceil(left / TICK_MS))));
     }, 120);
     return () => clearInterval(timer);
   }, [auto, streaming, shoot]);
 
-  // Held in a ref and released only on unmount. Depending on `shots` meant the
-  // cleanup ran on every status change and revoked URLs that the very next
-  // render was still displaying - thumbnails went blank the moment an upload
-  // finished.
-  const previews = useRef<string[]>([]);
-  useEffect(() => () => previews.current.forEach(URL.revokeObjectURL), []);
+  useEffect(() => () => pickedUrls.current.forEach(URL.revokeObjectURL), []);
 
   // Retry anything left over from a previous visit, and again whenever the
-  // connection comes back.
+  // connection comes back. flush() serialises itself, so mount and an
+  // immediate "online" event cannot upload the same photo twice.
   useEffect(() => {
     if (!offlineQueueAvailable()) return;
-    const run = () => {
-      void flush().then(({ sent }) => {
-        if (sent > 0) router.refresh();
-        void listPending(sessionId).then((p) => setQueued(p.length));
-      });
+    let alive = true;
+
+    const run = async () => {
+      try {
+        const { sent, rejected } = await flush((item, outcome) => {
+          if (!alive) return;
+          setShots((p) =>
+            p.map((s) =>
+              s.id === item.id
+                ? outcome === "sent"
+                  ? { ...s, status: "read", message: undefined }
+                  : { ...s, status: "failed", message: "The server refused this photo" }
+                : s,
+            ),
+          );
+        });
+        if (!alive) return;
+        if (sent > 0 || rejected > 0) router.refresh();
+        const remaining = await listPending(sessionId);
+        if (alive) setQueued(remaining.length);
+      } catch {
+        // A queue that cannot be read must not take the screen down with it.
+      }
     };
-    run();
-    window.addEventListener("online", run);
-    return () => window.removeEventListener("online", run);
+
+    void run();
+    const onOnline = () => void run();
+    window.addEventListener("online", onOnline);
+    return () => {
+      alive = false;
+      window.removeEventListener("online", onOnline);
+    };
   }, [router, sessionId]);
+
+  const refreshQueued = useCallback(async () => {
+    try {
+      setQueued((await listPending(sessionId)).length);
+    } catch {
+      /* the count is informational */
+    }
+  }, [sessionId]);
 
   const readCount = shots.filter((s) => s.status === "read").length;
 
@@ -395,8 +496,14 @@ export default function CapturePanel({
               onClick={onDone}
               className="relative h-[74px] w-[60px] shrink-0 overflow-hidden rounded-[12px] border-2 border-field-inkLine hover:border-field-accent"
             >
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={s.preview} alt="" className="h-full w-full object-cover" />
+              {s.preview ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={s.preview} alt="" className="h-full w-full object-cover" />
+              ) : (
+                <span className="flex h-full w-full items-center justify-center bg-field-inkRaised text-f-13 font-semibold text-field-mutedDarkAlt">
+                  PDF
+                </span>
+              )}
               <span className="absolute left-1 top-1 flex h-[22px] w-[22px] items-center justify-center rounded-full bg-field-accent text-f-13 font-bold text-field-accentText">
                 {i + 1}
               </span>
@@ -428,7 +535,19 @@ export default function CapturePanel({
           className="hidden"
           onChange={(e) => {
             const f = e.target.files?.[0];
-            if (f) void upload(f, f.name);
+            if (f) {
+              // A PDF cannot be shown in an <img>, so it gets a marker instead
+              // of a broken thumbnail. Images get an object URL, released once
+              // the upload settles so a long session does not pin every file
+              // the user picked.
+              const isPdf = f.type === "application/pdf" || /\.pdf$/i.test(f.name);
+              const preview = isPdf ? "" : URL.createObjectURL(f);
+              // Released on unmount rather than when the upload settles: the
+              // tile goes on displaying this URL afterwards, and revoking it
+              // early blanked the thumbnail the moment the upload finished.
+              if (preview) pickedUrls.current.push(preview);
+              void upload(f, f.name, preview);
+            }
             e.target.value = "";
           }}
         />

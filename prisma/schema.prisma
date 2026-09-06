@@ -189,6 +189,16 @@ model Receipt {
   sessionId String
   session   ExpenseSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
+  // Identifier minted on the DEVICE when the shutter fires, and unique.
+  //
+  // A capture can be uploaded twice through no fault of anyone's: the server
+  // commits, the response is lost on a bad connection, and the offline queue
+  // retries what it reasonably believes never arrived. Without this the second
+  // attempt creates a second receipt and someone reconciles it by hand later.
+  // It is the same protection M3 gives an AP invoice through SINO, applied
+  // where this app is the ledger.
+  captureId String? @unique
+
   imagePath String? // path under /public/uploads
 
   // OCR-extracted + user-verifiable header fields.

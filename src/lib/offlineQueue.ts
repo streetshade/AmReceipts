@@ -47,15 +47,72 @@ export function offlineQueueAvailable(): boolean {
   return typeof indexedDB !== "undefined";
 }
 
-export async function enqueue(item: Omit<PendingUpload, "attempts">): Promise<void> {
+export interface EnqueueResult {
+  /** Older captures dropped to make room. Non-zero means data was lost. */
+  evicted: number;
+}
+
+/**
+ * Queue a capture for later, bounded.
+ *
+ * Eviction and insertion happen in ONE transaction. Doing them separately
+ * meant a failed `put` after a successful delete lost both the evicted receipt
+ * AND the new capture, and two concurrent enqueues could each read a count
+ * below the cap and both write.
+ *
+ * A phone out of signal for a week should not fill its storage quota and start
+ * failing writes silently. The oldest go first, because the newest capture is
+ * the one the user is looking at - and the count is RETURNED, so the caller can
+ * say so rather than losing a receipt quietly.
+ */
+export async function enqueue(item: Omit<PendingUpload, "attempts">): Promise<EnqueueResult> {
   const db = await openDb();
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(STORE, "readwrite");
-    tx.objectStore(STORE).put({ ...item, attempts: 0 });
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
-  db.close();
+  try {
+    const evicted = await new Promise<number>((resolve, reject) => {
+      const tx = db.transaction(STORE, "readwrite");
+      const store = tx.objectStore(STORE);
+      let dropped = 0;
+
+      const write = () => store.put({ ...item, attempts: 0 });
+
+      // Counting the store and adding one assumes this is a NEW key. Re-queuing
+      // an id already present would otherwise evict a receipt to make room for
+      // something that needs none.
+      const existingReq = store.count(item.id);
+      existingReq.onsuccess = () => {
+        const countReq = store.count();
+        countReq.onsuccess = () => {
+          const replacing = existingReq.result > 0 ? 1 : 0;
+          const overflow = countReq.result + 1 - replacing - MAX_QUEUED;
+          if (overflow <= 0) {
+            write();
+            return;
+          }
+          // Oldest first, via the capturedAt index.
+          const cursorReq = store.index("capturedAt").openCursor();
+          cursorReq.onsuccess = () => {
+            const cursor = cursorReq.result;
+            if (cursor && dropped < overflow) {
+              cursor.delete();
+              dropped++;
+              cursor.continue();
+            } else {
+              write();
+            }
+          };
+        };
+      };
+
+      tx.oncomplete = () => resolve(dropped);
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+    return { evicted };
+  } finally {
+    // Released even when the transaction failed; otherwise a phone with a full
+    // quota accumulates open connections on every attempt.
+    db.close();
+  }
 }
 
 export async function listPending(sessionId?: string): Promise<PendingUpload[]> {
@@ -92,10 +149,41 @@ async function noteFailure(item: PendingUpload, message: string): Promise<void> 
   db.close();
 }
 
+/** Most a queue may hold before the oldest are dropped, and a warning shown. */
+export const MAX_QUEUED = 60;
+
 export interface FlushResult {
   sent: number;
   remaining: number;
+  /** Items abandoned because the server refused them permanently. */
+  rejected: number;
 }
+
+/**
+ * Whether a response means "never going to work" or "try later".
+ *
+ * Getting this wrong is expensive in both directions: deleting on a 429 throws
+ * away a receipt because the server was momentarily busy, and retrying a 413
+ * for ever fills the queue with something that can never be sent. An earlier
+ * version deleted on ANY 4xx and counted it as sent, which silently discarded
+ * receipts on an expired session.
+ */
+export function isPermanentRejection(status: number): boolean {
+  // 400 malformed, 404 the session no longer exists, 413 too large,
+  // 415 wrong type, 422 unprocessable. Retrying none of these can help.
+  return status === 400 || status === 404 || status === 413 || status === 415 || status === 422;
+}
+
+// One flush at a time, process-wide. Mount and the "online" event can fire
+// within milliseconds of each other, and two flushes over one queue upload the
+// same photo twice.
+//
+// Listeners are held separately from the promise: a caller that JOINS a running
+// flush still needs to hear about its own tiles, and an earlier version simply
+// discarded the joiner's callback - so a freshly mounted panel could sit
+// showing "queued" for photos that had already been sent.
+let inFlight: Promise<FlushResult> | null = null;
+const listeners = new Set<(item: PendingUpload, outcome: "sent" | "rejected") => void>();
 
 /**
  * Try to send everything queued.
@@ -104,29 +192,81 @@ export interface FlushResult {
  * including a rejection, because a photo the server refuses will be refused
  * again and would otherwise retry for ever. A network failure leaves it queued.
  */
-export async function flush(onSent?: (item: PendingUpload) => void): Promise<FlushResult> {
-  if (!offlineQueueAvailable()) return { sent: 0, remaining: 0 };
-
-  const pending = await listPending();
-  let sent = 0;
-
-  for (const item of pending) {
-    const form = new FormData();
-    form.append("image", item.blob, item.filename);
+export async function flush(onSent?: (item: PendingUpload, outcome: "sent" | "rejected") => void): Promise<FlushResult> {
+  if (!offlineQueueAvailable()) return { sent: 0, remaining: 0, rejected: 0 };
+  // Join the flush already running rather than starting a second one.
+  if (onSent) listeners.add(onSent);
+  if (inFlight) {
     try {
-      const res = await fetch(`/api/sessions/${item.sessionId}/receipts`, { method: "POST", body: form });
-      if (res.ok || (res.status >= 400 && res.status < 500)) {
-        await remove(item.id);
-        sent++;
-        onSent?.(item);
-      } else {
-        await noteFailure(item, `Server error ${res.status}`);
-      }
-    } catch {
-      // Still offline. Left in the queue for the next attempt.
-      await noteFailure(item, "No connection");
+      return await inFlight;
+    } finally {
+      if (onSent) listeners.delete(onSent);
     }
   }
 
-  return { sent, remaining: (await listPending()).length };
+  const notify = (item: PendingUpload, outcome: "sent" | "rejected") => {
+    for (const l of listeners) {
+      try {
+        l(item, outcome);
+      } catch {
+        /* a listener must not take the flush down with it */
+      }
+    }
+  };
+
+  inFlight = (async () => {
+    let sent = 0;
+    let rejected = 0;
+
+    // Re-read each pass. Work enqueued while a flush is running would
+    // otherwise wait for the next mount or "online" event to be noticed.
+    for (let pass = 0; pass < 3; pass++) {
+      const pending = await listPending();
+      if (pending.length === 0) break;
+      let progressed = false;
+
+      for (const item of pending) {
+        const form = new FormData();
+        form.append("image", item.blob, item.filename);
+        // The queue's own id is the capture id the first attempt used, so a
+        // retry after a lost response is recognised rather than duplicated.
+        form.append("captureId", item.id);
+        try {
+          const res = await fetch(`/api/sessions/${item.sessionId}/receipts`, { method: "POST", body: form });
+          if (res.ok) {
+            await remove(item.id);
+            sent++;
+            progressed = true;
+            notify(item, "sent");
+          } else if (isPermanentRejection(res.status)) {
+            // Refused for a reason retrying cannot change. Removed, but
+            // reported as rejected rather than sent so it is not silently lost.
+            await remove(item.id);
+            rejected++;
+            progressed = true;
+            notify(item, "rejected");
+          } else {
+            // 401, 408, 429, 5xx: the server may take it later.
+            await noteFailure(item, `Server said ${res.status}`);
+          }
+        } catch {
+          // Still offline. Nothing further will succeed this pass either.
+          await noteFailure(item, "No connection");
+          return { sent, rejected, remaining: (await listPending()).length };
+        }
+      }
+
+      // Nothing moved, so another pass would repeat the same failures.
+      if (!progressed) break;
+    }
+
+    return { sent, rejected, remaining: (await listPending()).length };
+  })();
+
+  try {
+    return await inFlight;
+  } finally {
+    inFlight = null;
+    if (onSent) listeners.delete(onSent);
+  }
 }
