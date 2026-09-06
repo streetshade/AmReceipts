@@ -4,6 +4,8 @@ import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import AppHeader from "@/components/AppHeader";
 import AdminClient, { type AdminUser, type AdminGroup } from "./AdminClient";
+import InterfaceCard from "./InterfaceCard";
+import { getUiVersion } from "@/lib/settings";
 
 export const dynamic = "force-dynamic";
 
@@ -11,6 +13,8 @@ export default async function AdminPage() {
   const me = await getCurrentUser();
   if (!me) redirect("/login");
   if (me.role !== "admin") redirect("/dashboard");
+
+  const uiVersion = await getUiVersion();
 
   const [users, groups] = await Promise.all([
     prisma.user.findMany({
@@ -45,6 +49,7 @@ export default async function AdminPage() {
             Integrations →
           </Link>
         </div>
+        <InterfaceCard current={uiVersion} />
         <AdminClient users={adminUsers} groups={adminGroups} currentUserId={me.id} />
       </main>
     </>

@@ -45,9 +45,9 @@ check("every value from 0 to 2000 cents reconciles across provinces", allBalance
 check("zero tax produces no lines", splitTax("CA", "BC", 0).length === 0);
 
 // Labels.
-check("a whole rate reads cleanly", taxLabel({ code: "GST", rateBasisPoints: 500, amount: 0 }) === "GST 5%");
-check("a fractional rate keeps its precision", taxLabel({ code: "QST", rateBasisPoints: 998, amount: 0 }) === "QST 9.98%");
-check("an unmapped tax is called Sales tax", taxLabel({ code: "SALES", rateBasisPoints: 0, amount: 0 }) === "Sales tax");
+check("a whole rate reads cleanly", taxLabel({ code: "GST", ratePpm: 50000, amount: 0 }) === "GST 5%");
+check("Quebec 9.975% survives exactly", taxLabel({ code: "QST", ratePpm: 99750, amount: 0 }) === "QST 9.975%");
+check("an unmapped tax is called Sales tax", taxLabel({ code: "SALES", ratePpm: 0, amount: 0 }) === "Sales tax");
 
 check("componentsBalance catches a mismatch", !componentsBalance([{ amount: 100 }], 101));
 

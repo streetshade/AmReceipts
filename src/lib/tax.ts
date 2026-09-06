@@ -19,32 +19,38 @@ export type TaxCode = "GST" | "PST" | "QST" | "HST" | "SALES";
 
 export interface TaxComponent {
   code: TaxCode;
-  /** Basis points: 5% is 500. */
-  rateBasisPoints: number;
+  /**
+   * Parts per million: 5% is 50000, and Quebec's 9.975% is 99750.
+   *
+   * Basis points cannot hold 9.975% - it is 997.5 of them - and rounding to
+   * 998 both mislabels the rate and skews the GST/QST apportionment. Integer
+   * ppm expresses every real rate exactly.
+   */
+  ratePpm: number;
   amount: number; // cents
 }
 
 interface RegionRule {
   label: string;
   /** Components charged, in the order they should be shown. */
-  parts: { code: TaxCode; rateBasisPoints: number }[];
+  parts: { code: TaxCode; ratePpm: number }[];
 }
 
 // Canada. Province code -> what is charged there.
 const CANADA: Record<string, RegionRule> = {
-  AB: { label: "Alberta", parts: [{ code: "GST", rateBasisPoints: 500 }] },
-  BC: { label: "British Columbia", parts: [{ code: "GST", rateBasisPoints: 500 }, { code: "PST", rateBasisPoints: 700 }] },
-  MB: { label: "Manitoba", parts: [{ code: "GST", rateBasisPoints: 500 }, { code: "PST", rateBasisPoints: 700 }] },
-  NB: { label: "New Brunswick", parts: [{ code: "HST", rateBasisPoints: 1500 }] },
-  NL: { label: "Newfoundland and Labrador", parts: [{ code: "HST", rateBasisPoints: 1500 }] },
-  NS: { label: "Nova Scotia", parts: [{ code: "HST", rateBasisPoints: 1400 }] },
-  NT: { label: "Northwest Territories", parts: [{ code: "GST", rateBasisPoints: 500 }] },
-  NU: { label: "Nunavut", parts: [{ code: "GST", rateBasisPoints: 500 }] },
-  ON: { label: "Ontario", parts: [{ code: "HST", rateBasisPoints: 1300 }] },
-  PE: { label: "Prince Edward Island", parts: [{ code: "HST", rateBasisPoints: 1500 }] },
-  QC: { label: "Quebec", parts: [{ code: "GST", rateBasisPoints: 500 }, { code: "QST", rateBasisPoints: 998 }] },
-  SK: { label: "Saskatchewan", parts: [{ code: "GST", rateBasisPoints: 500 }, { code: "PST", rateBasisPoints: 600 }] },
-  YT: { label: "Yukon", parts: [{ code: "GST", rateBasisPoints: 500 }] },
+  AB: { label: "Alberta", parts: [{ code: "GST", ratePpm: 50000 }] },
+  BC: { label: "British Columbia", parts: [{ code: "GST", ratePpm: 50000 }, { code: "PST", ratePpm: 70000 }] },
+  MB: { label: "Manitoba", parts: [{ code: "GST", ratePpm: 50000 }, { code: "PST", ratePpm: 70000 }] },
+  NB: { label: "New Brunswick", parts: [{ code: "HST", ratePpm: 150000 }] },
+  NL: { label: "Newfoundland and Labrador", parts: [{ code: "HST", ratePpm: 150000 }] },
+  NS: { label: "Nova Scotia", parts: [{ code: "HST", ratePpm: 140000 }] },
+  NT: { label: "Northwest Territories", parts: [{ code: "GST", ratePpm: 50000 }] },
+  NU: { label: "Nunavut", parts: [{ code: "GST", ratePpm: 50000 }] },
+  ON: { label: "Ontario", parts: [{ code: "HST", ratePpm: 130000 }] },
+  PE: { label: "Prince Edward Island", parts: [{ code: "HST", ratePpm: 150000 }] },
+  QC: { label: "Quebec", parts: [{ code: "GST", ratePpm: 50000 }, { code: "QST", ratePpm: 99750 }] },
+  SK: { label: "Saskatchewan", parts: [{ code: "GST", ratePpm: 50000 }, { code: "PST", ratePpm: 60000 }] },
+  YT: { label: "Yukon", parts: [{ code: "GST", ratePpm: 50000 }] },
 };
 
 /** Regions we can split. The US is deliberately not enumerated - see below. */
@@ -74,15 +80,15 @@ export function splitTax(country: string | null, region: string | null, taxTotal
   // since the split only matters where some parts are reclaimable.
   const rule = country?.toUpperCase() === "CA" && region ? CANADA[region.toUpperCase()] : undefined;
   if (!rule) {
-    return [{ code: "SALES", rateBasisPoints: 0, amount: taxTotalCents }];
+    return [{ code: "SALES", ratePpm: 0, amount: taxTotalCents }];
   }
   if (rule.parts.length === 1) {
     const p = rule.parts[0];
-    return [{ code: p.code, rateBasisPoints: p.rateBasisPoints, amount: taxTotalCents }];
+    return [{ code: p.code, ratePpm: p.ratePpm, amount: taxTotalCents }];
   }
 
-  const totalRate = rule.parts.reduce((s, p) => s + p.rateBasisPoints, 0);
-  const raw = rule.parts.map((p) => (taxTotalCents * p.rateBasisPoints) / totalRate);
+  const totalRate = rule.parts.reduce((s, p) => s + p.ratePpm, 0);
+  const raw = rule.parts.map((p) => (taxTotalCents * p.ratePpm) / totalRate);
   const parts = raw.map(Math.floor);
   let remainder = taxTotalCents - parts.reduce((a, b) => a + b, 0);
 
@@ -91,13 +97,13 @@ export function splitTax(country: string | null, region: string | null, taxTotal
   const order = raw.map((v, i) => ({ i, v })).sort((a, b) => b.v - a.v);
   for (let k = 0; remainder > 0 && k < order.length; k++, remainder--) parts[order[k].i]++;
 
-  return rule.parts.map((p, i) => ({ code: p.code, rateBasisPoints: p.rateBasisPoints, amount: parts[i] }));
+  return rule.parts.map((p, i) => ({ code: p.code, ratePpm: p.ratePpm, amount: parts[i] }));
 }
 
 /** Human label for a tax line, e.g. "GST 5%". */
 export function taxLabel(component: TaxComponent): string {
-  if (component.rateBasisPoints === 0) return component.code === "SALES" ? "Sales tax" : component.code;
-  const pct = component.rateBasisPoints / 100;
+  if (component.ratePpm === 0) return component.code === "SALES" ? "Sales tax" : component.code;
+  const pct = component.ratePpm / 10000;
   // Trim a trailing .0 so 5% reads as "5%" and 9.975% keeps its precision.
   const shown = Number.isInteger(pct) ? String(pct) : String(Number(pct.toFixed(3)));
   return `${component.code} ${shown}%`;

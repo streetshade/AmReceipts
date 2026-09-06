@@ -65,6 +65,17 @@ model Group {
   updatedAt DateTime @updatedAt
 }
 
+// Small key/value store for system-wide settings an admin controls.
+//
+// Deliberately not per-user: the field redesign replaces the screens a
+// technician uses, and "some people see one app and some another" is a support
+// problem, not a feature. An admin chooses which interface the site serves.
+model AppSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
 // A configurable integration with an external business system.
 //
 // Which integrations exist, what fields they take and which of those are
@@ -233,9 +244,11 @@ model ReceiptTax {
 
   // "GST" | "PST" | "HST" | "QST" | "SALES"
   code String
-  // Basis points, so 5% is 500. Integer for the same reason money is: a rate
-  // that reads back differently from how it was entered is a support call.
-  rateBasisPoints Int?
+  // Parts per million, so 5% is 50000 and Quebec's 9.975% is 99750. Basis
+  // points cannot hold 9.975% - it is 997.5 of them. Integer for the same
+  // reason money is: a rate that reads back differently from how it was
+  // entered is a support call.
+  ratePpm Int?
   // Cents. These must sum to Receipt.tax.
   amount Int
 

@@ -2,6 +2,7 @@ import { redirect, notFound } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth";
 import { loadSession } from "@/lib/sessions";
 import { toSessionDTO } from "@/lib/dto";
+import { getUiVersion } from "@/lib/settings";
 import AppHeader from "@/components/AppHeader";
 import SessionClient from "./SessionClient";
 
@@ -14,11 +15,13 @@ export default async function SessionPage({ params }: { params: { id: string } }
   const session = await loadSession(params.id, user.id);
   if (!session) notFound();
 
+  const uiVersion = await getUiVersion();
+
   return (
     <>
       <AppHeader userName={user.name} role={user.role} />
       <main className="mx-auto max-w-4xl px-4 py-6">
-        <SessionClient initial={toSessionDTO(session)} />
+        <SessionClient initial={toSessionDTO(session)} uiVersion={uiVersion} />
       </main>
     </>
   );
