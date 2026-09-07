@@ -114,6 +114,12 @@ export default function ReceiptDetail({
   }
 
   async function save(markVerified: boolean) {
+    // The buttons are disabled when this does not hold, but a guard that lives
+    // only in the UI stops being true the moment another caller appears.
+    if (!balances || taxTotal === null) {
+      setErr("The tax lines need to add up before this can be saved.");
+      return;
+    }
     setBusy(true);
     setErr(null);
     try {

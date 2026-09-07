@@ -105,20 +105,38 @@ function ReceiptCard({ receipt, onChange }: { receipt: ReceiptDTO; onChange: () 
   );
 
   const verified = receipt.status === "verified";
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   async function save() {
+    // parseToCents returns null for anything that is not a number. Sending
+    // that through would CLEAR the stored total, and an unparseable line
+    // amount used to be written as a nought over whatever the user typed.
+    // Refused instead, with the field named.
+    const totalCents = parseToCents(total);
+    if (total.trim() !== "" && totalCents === null) {
+      setSaveError("That total is not a number I can read.");
+      return;
+    }
+    const badLine = items.find((i) => i.description.trim() && i.amount.trim() !== "" && parseToCents(i.amount) === null);
+    if (badLine) {
+      setSaveError(`"${badLine.description.trim()}" has an amount I cannot read.`);
+      return;
+    }
+
     setBusy(true);
+    setSaveError(null);
     const body = {
       merchant: merchant || null,
       purchaseDate: date ? new Date(date + "T00:00:00Z").toISOString() : null,
       paymentRaw: paymentRaw || null,
-      total: parseToCents(total),
+      total: totalCents,
       status: "verified" as const,
       lineItems: items
         .filter((i) => i.description.trim())
         .map((i) => ({
           description: i.description.trim(),
           quantity: Math.max(1, Number(i.quantity) || 1),
+          // Safe: unparseable amounts were refused above.
           amount: parseToCents(i.amount) ?? 0,
         })),
     };
@@ -289,6 +307,7 @@ function ReceiptCard({ receipt, onChange }: { receipt: ReceiptDTO; onChange: () 
             <button className="btn-secondary" onClick={() => setEditing(false)} disabled={busy}>
               Cancel
             </button>
+            {saveError && <span className="text-sm text-red-300">{saveError}</span>}
             <button className="btn-primary" onClick={save} disabled={busy}>
               {busy ? "Saving…" : "Save & verify"}
             </button>

@@ -7,7 +7,7 @@
 // disagrees with it by a penny is an app nobody trusts.
 
 import { splitTax, taxLabel, componentsBalance } from "../src/lib/tax";
-import { parseToCents, centsToInput } from "../src/lib/money";
+import { parseToCents, centsToInput, MAX_CENTS } from "../src/lib/money";
 
 let failures = 0;
 function check(name: string, passed: boolean, detail = "") {
@@ -61,6 +61,10 @@ check("nonsense is null, not NaN", parseToCents("abc") === null);
 // Blind character-stripping used to turn these into plausible-looking numbers.
 check("scientific notation is refused, not silently rewritten", parseToCents("1e3") === null);
 check("a stray letter refuses the whole value", parseToCents("12x.50") === null);
+// The ceiling must match the 32-bit Int the database column actually is.
+check("the cap is a real 32-bit int ceiling", MAX_CENTS === 2_147_483_647);
+check("an amount at the cap is accepted", parseToCents("21474836.47") === MAX_CENTS);
+check("one cent over the cap is refused", parseToCents("21474836.48") === null);
 check("an absurd amount is refused rather than overflowing", parseToCents("99999999999999") === null);
 check("negative zero normalises to zero", Object.is(parseToCents("-0.00"), 0));
 check("thousands separators still parse", parseToCents("1,234.56") === 123456);

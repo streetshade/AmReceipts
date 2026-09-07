@@ -42,8 +42,16 @@ function centsFrom(value: number): number | null {
   return cents === 0 ? 0 : cents;
 }
 
-/** About ten billion in major units: far beyond any receipt, well inside Int. */
-export const MAX_CENTS = 1_000_000_000_000;
+/**
+ * The largest amount that fits the database column.
+ *
+ * Every money field in the schema is a Prisma `Int`, which is a 32-bit signed
+ * integer - so the real ceiling is 2,147,483,647 cents, about $21.4m. An
+ * earlier value here was 1_000_000_000_000, five hundred times too large, with
+ * a comment claiming it was "well inside Int". Anything above this would pass
+ * validation and then fail at the database.
+ */
+export const MAX_CENTS = 2_147_483_647;
 
 /** Format integer cents for an editable field: no symbol, always two places. */
 export function centsToInput(cents: number): string {

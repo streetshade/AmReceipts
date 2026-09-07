@@ -77,8 +77,9 @@ export const PATCH = handler(async (req: Request, { params }: Params) => {
       const parts = body.taxes.reduce((sum, t) => sum + t.amount, 0);
       if (nextTax === null) {
         // No total to divide. Components describing nothing would be a number
-        // finance could not reconcile.
-        if (parts !== 0) return "Cannot split tax when the receipt has no tax total";
+        // finance could not reconcile - and zero-valued rows are no better,
+        // since they still assert that a split was decided.
+        if (body.taxes.length > 0) return "Cannot split tax when the receipt has no tax total";
       } else if (parts !== nextTax) {
         return `The tax lines add up to ${(parts / 100).toFixed(2)} but the receipt's tax is ${(nextTax / 100).toFixed(2)}`;
       }
