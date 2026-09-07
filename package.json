@@ -5,6 +5,7 @@
   "description": "Collect, aggregate and report on job and travel expenditure by scanning receipts and product barcodes.",
   "scripts": {
     "dev": "next dev",
+    "dev:phone": "bash scripts/dev-https.sh",
     "build": "prisma generate && next build",
     "start": "next start",
     "lint": "next lint",

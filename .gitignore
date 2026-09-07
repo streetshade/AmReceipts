@@ -34,3 +34,6 @@ m3-reference/
 *.ionapi
 *.pfx
 *.p12
+
+# Self-signed dev certificates for testing on a phone (npm run dev:phone).
+certificates/
