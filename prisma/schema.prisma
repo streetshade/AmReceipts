@@ -143,6 +143,23 @@ model Job {
   number   String
   name     String?
 
+  // Where the job is, so arriving on site attaches the spend by itself.
+  //
+  // The field design makes job attachment automatic from location and calls a
+  // bare text field the wrong primary path: a technician with gloves on, in a
+  // vehicle, will not type a job number, and the one they eventually type is
+  // as often the last job as this one.
+  //
+  // All four are nullable, and a job without coordinates simply never matches -
+  // it is still pickable by hand. Nothing about the existing assignment flow
+  // depends on these being filled in.
+  address      String?
+  latitude     Float?
+  longitude    Float?
+  // How close counts as "here", in metres. Null takes the default; a large
+  // site (a yard, a plant) needs a wider circle than a house.
+  radiusMetres Int?
+
   sessions ExpenseSession[]
 
   createdAt DateTime @default(now())

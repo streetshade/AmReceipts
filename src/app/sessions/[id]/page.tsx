@@ -8,7 +8,13 @@ import SessionClient from "./SessionClient";
 
 export const dynamic = "force-dynamic";
 
-export default async function SessionPage({ params }: { params: { id: string } }) {
+export default async function SessionPage({
+  params,
+  searchParams,
+}: {
+  params: { id: string };
+  searchParams: { capture?: string };
+}) {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
 
@@ -21,7 +27,13 @@ export default async function SessionPage({ params }: { params: { id: string } }
     <>
       <AppHeader userName={user.name} role={user.role} />
       <main className="mx-auto max-w-4xl px-4 py-6">
-        <SessionClient initial={toSessionDTO(session)} uiVersion={uiVersion} />
+        <SessionClient
+          initial={toSessionDTO(session)}
+          uiVersion={uiVersion}
+          // Home opens the camera directly: `Log here` should be one tap to a
+          // viewfinder, not one tap to a screen with a button on it.
+          startCapturing={searchParams.capture === "1"}
+        />
       </main>
     </>
   );

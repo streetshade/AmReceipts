@@ -17,9 +17,12 @@ type Tab = "receipts" | "items";
 export default function SessionClient({
   initial,
   uiVersion = "field",
+  startCapturing = false,
 }: {
   initial: SessionDTO;
   uiVersion?: UiVersion;
+  /** Arrived from Home's `Log here` / `Scan a receipt`; open the camera at once. */
+  startCapturing?: boolean;
 }) {
   const router = useRouter();
   const s = initial; // server component is the source of truth; refresh() re-fetches.
@@ -27,7 +30,9 @@ export default function SessionClient({
   // Capture is a full-screen pushed surface in the field design, not a panel:
   // the camera needs the whole viewport, and everything else on the page is a
   // distraction while a technician is trying to photograph a receipt.
-  const [capturing, setCapturing] = useState(false);
+  // Only honoured for the field interface: the classic screens have no capture
+  // overlay, and the flag arrives on the URL where anything could set it.
+  const [capturing, setCapturing] = useState(startCapturing && uiVersion === "field");
   // Receipt detail is a pushed screen too, for the same reason capture is: the
   // tax split needs the room, and it is a confirm-one-thing task.
   const [openReceiptId, setOpenReceiptId] = useState<string | null>(null);

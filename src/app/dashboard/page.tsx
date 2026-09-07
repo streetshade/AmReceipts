@@ -1,14 +1,48 @@
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/db";
+import { getUiVersion } from "@/lib/settings";
+import { loadHomeSummary } from "@/lib/homeSummary";
+import { siteLabel } from "@/lib/geo";
 import AppHeader from "@/components/AppHeader";
 import DashboardClient from "./DashboardClient";
+import HomeScreen from "./field/HomeScreen";
+import FieldTabBar from "./field/FieldTabBar";
 
 export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
+
+  const uiVersion = await getUiVersion();
+
+  if (uiVersion === "field") {
+    const [summary, jobs] = await Promise.all([
+      loadHomeSummary(user),
+      // The manual picker's contents, sent with the page rather than fetched:
+      // it is the fallback for a phone that could not be located, and half of
+      // those phones have no signal either.
+      prisma.job.findMany({
+        where: { userId: user.id },
+        orderBy: { createdAt: "desc" },
+        take: 8,
+        select: { id: true, number: true, name: true, address: true },
+      }),
+    ]);
+
+    // No AppHeader and no max-w-4xl gutter: Home draws its own chrome, and the
+    // desktop header on top of it would push the whole screen down a nav bar.
+    return (
+      <div className="flex min-h-[100dvh] flex-col bg-field-ground">
+        <HomeScreen
+          summary={summary}
+          recentJobs={jobs.map((j) => ({ ...j, label: siteLabel(j) }))}
+        />
+        <FieldTabBar role={user.role} />
+      </div>
+    );
+  }
 
   const sessions = await prisma.expenseSession.findMany({
     where: { userId: user.id },
