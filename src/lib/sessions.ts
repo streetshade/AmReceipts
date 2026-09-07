@@ -11,6 +11,7 @@ export async function loadSession(sessionId: string, userId: string) {
         orderBy: { createdAt: "asc" },
         include: {
           paymentMethod: true,
+          taxes: { orderBy: { code: "asc" } },
           lineItems: {
             orderBy: { createdAt: "asc" },
             include: { scannedItem: true },

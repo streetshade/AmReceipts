@@ -9,6 +9,7 @@ import BarcodePanel from "./BarcodePanel";
 import AssignmentPanel from "./AssignmentPanel";
 import ApprovalBar from "./ApprovalBar";
 import CapturePanel from "./field/CapturePanel";
+import ReceiptDetail from "./field/ReceiptDetail";
 import type { UiVersion } from "@/lib/settings";
 
 type Tab = "receipts" | "items";
@@ -27,6 +28,9 @@ export default function SessionClient({
   // the camera needs the whole viewport, and everything else on the page is a
   // distraction while a technician is trying to photograph a receipt.
   const [capturing, setCapturing] = useState(false);
+  // Receipt detail is a pushed screen too, for the same reason capture is: the
+  // tax split needs the room, and it is a confirm-one-thing task.
+  const [openReceiptId, setOpenReceiptId] = useState<string | null>(null);
 
   const scannedTotal = s.scannedItems.reduce((acc, i) => acc + i.quantity, 0);
   const linkedCount = s.scannedItems.filter((i) => i.lineItemId).length;
@@ -35,6 +39,16 @@ export default function SessionClient({
 
   // The DTO carries the job flattened, not nested.
   const jobLabel = s.jobNumber ? (s.jobName ? `${s.jobNumber} · ${s.jobName}` : s.jobNumber) : s.name;
+
+  const openReceipt = openReceiptId ? s.receipts.find((r) => r.id === openReceiptId) : undefined;
+
+  if (uiVersion === "field" && openReceipt) {
+    return (
+      <div className="fixed inset-0 z-50 overflow-hidden bg-field-ground">
+        <ReceiptDetail receipt={openReceipt} onBack={() => setOpenReceiptId(null)} />
+      </div>
+    );
+  }
 
   if (uiVersion === "field" && capturing) {
     // A fixed overlay, not an inline panel: rendered in place it would sit
@@ -78,6 +92,31 @@ export default function SessionClient({
             </span>
           </span>
         </button>
+      )}
+
+      {uiVersion === "field" && s.receipts.length > 0 && (
+        <section className="space-y-2 font-field">
+          <h2 className="text-f-14 font-semibold uppercase tracking-[.08em] text-muted">Receipts on this visit</h2>
+          {s.receipts.map((r) => (
+            <button
+              key={r.id}
+              onClick={() => setOpenReceiptId(r.id)}
+              className="flex w-full items-center justify-between gap-3 rounded-[16px] border border-line bg-panel px-4 py-3 text-left transition hover:border-brand/50"
+            >
+              <span className="min-w-0">
+                <span className="block truncate text-f-18 font-bold">{r.merchant ?? "Unknown merchant"}</span>
+                <span className="block text-f-15 text-muted">
+                  {r.taxes.length > 1
+                    ? `${r.taxes.length} tax lines`
+                    : r.status === "verified"
+                      ? "Checked"
+                      : "Needs a look"}
+                </span>
+              </span>
+              <span className="shrink-0 text-f-19 font-bold tabular-nums">{formatCents(r.total)}</span>
+            </button>
+          ))}
+        </section>
       )}
 
       {/* Header */}

@@ -10,6 +10,14 @@ export interface LineItemDTO {
   linkedScannedItemId: string | null;
 }
 
+/** One tax line on a receipt: GST, PST, HST, QST or a US sales tax. */
+export interface ReceiptTaxDTO {
+  code: string;
+  /** Parts per million: 5% is 50000. */
+  ratePpm: number | null;
+  amount: number;
+}
+
 export interface ReceiptDTO {
   id: string;
   imagePath: string | null;
@@ -21,6 +29,11 @@ export interface ReceiptDTO {
   paymentRaw: string | null;
   paymentLabel: string | null;
   status: string;
+  /** Where the receipt was issued - per receipt, since a technician crosses the border. */
+  country: string | null;
+  region: string | null;
+  /** The tax total broken into its parts. Empty when it has not been split. */
+  taxes: ReceiptTaxDTO[];
   lineItems: LineItemDTO[];
 }
 
@@ -78,6 +91,9 @@ export function toSessionDTO(s: LoadedSession): SessionDTO {
       paymentRaw: r.paymentRaw,
       paymentLabel: r.paymentMethod?.label ?? null,
       status: r.status,
+      country: r.country,
+      region: r.region,
+      taxes: r.taxes.map((t) => ({ code: t.code, ratePpm: t.ratePpm, amount: t.amount })),
       lineItems: r.lineItems.map((li) => ({
         id: li.id,
         description: li.description,

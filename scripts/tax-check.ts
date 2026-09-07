@@ -7,6 +7,7 @@
 // disagrees with it by a penny is an app nobody trusts.
 
 import { splitTax, taxLabel, componentsBalance } from "../src/lib/tax";
+import { parseToCents, centsToInput } from "../src/lib/money";
 
 let failures = 0;
 function check(name: string, passed: boolean, detail = "") {
@@ -50,6 +51,20 @@ check("Quebec 9.975% survives exactly", taxLabel({ code: "QST", ratePpm: 99750, 
 check("an unmapped tax is called Sales tax", taxLabel({ code: "SALES", ratePpm: 0, amount: 0 }) === "Sales tax");
 
 check("componentsBalance catches a mismatch", !componentsBalance([{ amount: 100 }], 101));
+
+// Money parsing, which the receipt screen leans on while the user is typing.
+check("a partly typed value is not read as zero", parseToCents("") === null && parseToCents("-") === null && parseToCents(".") === null);
+check("1.005 rounds up, not down through float error", parseToCents("1.005") === 101);
+check("currency decoration is ignored", parseToCents("$1,299.00") === 129900);
+check("a negative amount survives", parseToCents("-4.50") === -450);
+check("nonsense is null, not NaN", parseToCents("abc") === null);
+// Blind character-stripping used to turn these into plausible-looking numbers.
+check("scientific notation is refused, not silently rewritten", parseToCents("1e3") === null);
+check("a stray letter refuses the whole value", parseToCents("12x.50") === null);
+check("an absurd amount is refused rather than overflowing", parseToCents("99999999999999") === null);
+check("negative zero normalises to zero", Object.is(parseToCents("-0.00"), 0));
+check("thousands separators still parse", parseToCents("1,234.56") === 123456);
+check("round-trips through the input format", parseToCents(centsToInput(12345)) === 12345);
 
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);
