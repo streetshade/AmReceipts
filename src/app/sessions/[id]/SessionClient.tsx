@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { SessionDTO } from "@/lib/dto";
 import { formatCents } from "@/lib/money";
@@ -10,7 +10,10 @@ import AssignmentPanel from "./AssignmentPanel";
 import ApprovalBar from "./ApprovalBar";
 import CapturePanel from "./field/CapturePanel";
 import ReceiptDetail from "./field/ReceiptDetail";
+import ReviewCaptures from "./field/ReviewCaptures";
+import type { CaptureShot } from "@/lib/capture";
 import type { UiVersion } from "@/lib/settings";
+import { isOnline } from "@/lib/online";
 
 type Tab = "receipts" | "items";
 
@@ -36,43 +39,116 @@ export default function SessionClient({
   // Receipt detail is a pushed screen too, for the same reason capture is: the
   // tax split needs the room, and it is a confirm-one-thing task.
   const [openReceiptId, setOpenReceiptId] = useState<string | null>(null);
+  /**
+   * The burst being reviewed, or null.
+   *
+   * Held here rather than inside the camera screen because it has to outlive
+   * it: the camera is unmounted while review is up, so the phone is not left
+   * recording behind another screen, and this is what carries the strip back if
+   * the technician steps back to take another photograph.
+   */
+  const [burst, setBurst] = useState<CaptureShot[] | null>(null);
+  /**
+   * The same burst, kept while review is closed.
+   *
+   * `burst` is cleared to pop review off the stack, so it cannot also be what
+   * hands the strip back to the camera. This ref outlives that, and is cleared
+   * only when the whole stack closes.
+   */
+  const burstDraft = useRef<CaptureShot[] | null>(null);
 
   const scannedTotal = s.scannedItems.reduce((acc, i) => acc + i.quantity, 0);
   const linkedCount = s.scannedItems.filter((i) => i.lineItemId).length;
 
-  const refresh = () => router.refresh();
+  /**
+   * Re-fetch the page, but never with no connection.
+   *
+   * `router.refresh()` offline makes Next fail the RSC fetch, fall back to a
+   * full browser navigation, and leave a blank document - taking the burst of
+   * photographs held in memory with it. See `src/lib/online.ts`. Skipping it is
+   * harmless: with no connection there is nothing new on the server anyway.
+   */
+  const refresh = () => {
+    if (isOnline()) router.refresh();
+  };
 
   // The DTO carries the job flattened, not nested.
   const jobLabel = s.jobNumber ? (s.jobName ? `${s.jobNumber} · ${s.jobName}` : s.jobNumber) : s.name;
 
   const openReceipt = openReceiptId ? s.receipts.find((r) => r.id === openReceiptId) : undefined;
 
+  /** Leave the whole capture stack and go back to the visit. */
+  const closeStack = () => {
+    setOpenReceiptId(null);
+    setBurst(null);
+    burstDraft.current = null;
+    setCapturing(false);
+    refresh();
+  };
+
+  // The field screens are a stack, drawn topmost first: receipt detail sits
+  // over review, review sits over the camera. Each `Back` pops one level, which
+  // is why these are three pieces of state rather than one - stepping back from
+  // a receipt has to land on the review it was opened from, not on the visit.
+  //
+  // A fixed overlay, not an inline panel: rendered in place they would sit
+  // inside the page header and max-w-4xl gutter, so the camera would be a
+  // letterboxed strip and 100dvh would simply overflow below the chrome.
+  const overlay = "fixed inset-0 z-50 overflow-y-auto bg-field-ground";
+
   if (uiVersion === "field" && openReceipt) {
     return (
-      <div className="fixed inset-0 z-50 overflow-hidden bg-field-ground">
-        <ReceiptDetail receipt={openReceipt} onBack={() => setOpenReceiptId(null)} />
+      <div className={overlay}>
+        <ReceiptDetail
+          receipt={openReceipt}
+          // Falls back to review when it was opened from there, because review
+          // is still in state; otherwise this lands on the visit.
+          onBack={() => setOpenReceiptId(null)}
+        />
+      </div>
+    );
+  }
+
+  if (uiVersion === "field" && burst) {
+    return (
+      <div className={overlay}>
+        <ReviewCaptures
+          sessionId={s.id}
+          captures={burst}
+          receipts={s.receipts}
+          jobLabel={jobLabel}
+          onBack={() => {
+            // Back to the camera, carrying the burst so the strip is not empty.
+            setCapturing(true);
+            setBurst(null);
+          }}
+          onOpen={(id) => setOpenReceiptId(id)}
+          onFinish={closeStack}
+        />
       </div>
     );
   }
 
   if (uiVersion === "field" && capturing) {
-    // A fixed overlay, not an inline panel: rendered in place it would sit
-    // inside the page header and max-w-4xl gutter, so the camera would be a
-    // letterboxed strip and 100dvh would simply overflow below the chrome.
     return (
       <div className="fixed inset-0 z-50 overflow-hidden bg-field-ground">
-      <CapturePanel
-        sessionId={s.id}
-        jobLabel={jobLabel}
-        onDone={() => {
-          setCapturing(false);
-          refresh();
-        }}
-        onItems={() => {
-          setCapturing(false);
-          setTab("items");
-        }}
-      />
+        <CapturePanel
+          sessionId={s.id}
+          jobLabel={jobLabel}
+          initialShots={burstDraft.current ?? undefined}
+          onDone={closeStack}
+          onItems={() => {
+            setCapturing(false);
+            setBurst(null);
+            burstDraft.current = null;
+            setTab("items");
+          }}
+          onReview={(shots) => {
+            burstDraft.current = shots;
+            setBurst(shots);
+            setCapturing(false);
+          }}
+        />
       </div>
     );
   }

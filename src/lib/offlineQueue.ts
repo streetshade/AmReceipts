@@ -48,8 +48,8 @@ export function offlineQueueAvailable(): boolean {
 }
 
 export interface EnqueueResult {
-  /** Older captures dropped to make room. Non-zero means data was lost. */
-  evicted: number;
+  /** Older captures dropped to make room. Non-empty means data was lost. */
+  evicted: string[];
 }
 
 /**
@@ -62,16 +62,20 @@ export interface EnqueueResult {
  *
  * A phone out of signal for a week should not fill its storage quota and start
  * failing writes silently. The oldest go first, because the newest capture is
- * the one the user is looking at - and the count is RETURNED, so the caller can
- * say so rather than losing a receipt quietly.
+ * the one the user is looking at.
+ *
+ * The evicted IDs are returned, not just how many there were. A count is enough
+ * to warn the person taking the photograph, but not enough to correct the
+ * dropped ones: their tiles went on saying "sends when you get signal" about
+ * photographs that no longer existed anywhere.
  */
 export async function enqueue(item: Omit<PendingUpload, "attempts">): Promise<EnqueueResult> {
   const db = await openDb();
   try {
-    const evicted = await new Promise<number>((resolve, reject) => {
+    const evicted = await new Promise<string[]>((resolve, reject) => {
       const tx = db.transaction(STORE, "readwrite");
       const store = tx.objectStore(STORE);
-      let dropped = 0;
+      const dropped: string[] = [];
 
       const write = () => store.put({ ...item, attempts: 0 });
 
@@ -92,9 +96,9 @@ export async function enqueue(item: Omit<PendingUpload, "attempts">): Promise<En
           const cursorReq = store.index("capturedAt").openCursor();
           cursorReq.onsuccess = () => {
             const cursor = cursorReq.result;
-            if (cursor && dropped < overflow) {
+            if (cursor && dropped.length < overflow) {
+              dropped.push(String(cursor.value?.id ?? cursor.primaryKey));
               cursor.delete();
-              dropped++;
               cursor.continue();
             } else {
               write();

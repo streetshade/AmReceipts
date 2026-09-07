@@ -12,6 +12,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { formatCents } from "@/lib/money";
 import { flush, listPending, offlineQueueAvailable } from "@/lib/offlineQueue";
+import { isOnline } from "@/lib/online";
 import type { HomeSummary } from "@/lib/homeSummary";
 import OnSiteBanner, { type JobOption } from "./OnSiteBanner";
 import VisitCardLink from "./VisitCardLink";
@@ -73,7 +74,9 @@ export default function HomeScreen({
 
   const trySync = useCallback(async () => {
     if (!offlineQueueAvailable()) return;
-    if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    // Not merely pointless with no connection - a refresh in that state blanks
+    // the app. See `src/lib/online.ts`.
+    if (!isOnline()) {
       await refreshPending();
       return;
     }

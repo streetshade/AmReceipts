@@ -20,6 +20,14 @@ export interface ReceiptTaxDTO {
 
 export interface ReceiptDTO {
   id: string;
+  /**
+   * The id the device minted when the shutter fired.
+   *
+   * Carried through so the review screen can line a burst of photographs up
+   * against the receipts they became - including the ones that are still in the
+   * offline queue and have no receipt yet.
+   */
+  captureId: string | null;
   imagePath: string | null;
   merchant: string | null;
   purchaseDate: string | null;
@@ -82,6 +90,7 @@ export function toSessionDTO(s: LoadedSession): SessionDTO {
     receiptTotal: s.receipts.reduce((acc, r) => acc + (r.total ?? 0), 0),
     receipts: s.receipts.map((r) => ({
       id: r.id,
+      captureId: r.captureId,
       imagePath: r.imagePath,
       merchant: r.merchant,
       purchaseDate: r.purchaseDate ? r.purchaseDate.toISOString() : null,
