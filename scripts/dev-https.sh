@@ -23,31 +23,42 @@ cd "$(dirname "$0")/.."
 
 # ------------------------------------------------------------------ address
 
-# The default route names the interface carrying traffic, which is usually the
-# one the phone can reach - but not when a VPN is up, where it is a utun/ppp
-# tunnel with an address no phone on the Wi-Fi can talk to. So a tunnel is
-# skipped in favour of a real interface.
-lan_address() {
-  local iface ip
-  iface="$(route get default 2>/dev/null | awk '/interface:/{print $2}' || true)"
-  case "$iface" in
-    "" | utun* | ppp* | ipsec* | tun*)
-      # A VPN, or no route at all. Take the first hardware interface with an
-      # address instead. en0/en1 differ between Macs - Wi-Fi is en0 on a laptop
-      # and often en1 where there is also ethernet - so several are tried.
-      for iface in en0 en1 en2 en3; do
-        ip="$(ipconfig getifaddr "$iface" 2>/dev/null || true)"
-        [ -n "$ip" ] && { echo "$ip"; return 0; }
-      done
-      return 1
-      ;;
-  esac
-  ip="$(ipconfig getifaddr "$iface" 2>/dev/null || true)"
-  [ -n "$ip" ] || return 1
-  echo "$ip"
+# The addresses a phone might be able to reach this machine on, best first.
+#
+# The phone is on Wi-Fi, so Wi-Fi comes first - by name, from the system's own
+# list of hardware ports, not by guessing at en0. That guess is wrong on any Mac
+# with Ethernet: here en0 IS the Ethernet port and Wi-Fi is en1, and following
+# the default route instead would hand out an Ethernet address the moment a dock
+# was plugged in, which no phone on the Wi-Fi can reach.
+#
+# Every hardware port the system lists is then tried, rather than a hardcoded
+# en0-en4, so a machine whose Wi-Fi is en5 or whose addresses live on a dock is
+# not silently missed.
+lan_addresses() {
+  local wifi ports iface ip seenIface=" " seenIp=" "
+  wifi="$(networksetup -listallhardwareports 2>/dev/null \
+    | awk '/^Hardware Port: Wi-Fi/{getline; print $2; exit}')"
+  ports="$(networksetup -listallhardwareports 2>/dev/null | awk '/^Device:/{print $2}')"
+
+  for iface in "$wifi" "$(route get default 2>/dev/null | awk '/interface:/{print $2}')" $ports; do
+    case "$iface" in
+      "" | utun* | ppp* | ipsec* | tun* | bridge*) continue ;;  # reaches no phone
+    esac
+    case "$seenIface" in *" $iface "*) continue ;; esac
+    seenIface="$seenIface$iface "
+    ip="$(ipconfig getifaddr "$iface" 2>/dev/null || true)"
+    if [ -n "$ip" ]; then
+      # Two devices can report the same address; the certificate should not
+      # name it twice.
+      case "$seenIp" in *" $ip "*) continue ;; esac
+      seenIp="$seenIp$ip "
+      echo "$ip"
+    fi
+  done
 }
 
-IP="$(lan_address || true)"
+ADDRESSES="$(lan_addresses || true)"
+IP="$(printf '%s\n' "$ADDRESSES" | head -1)"
 if [ -z "$IP" ]; then
   echo "Could not work out this machine's address on the network." >&2
   echo "Is Wi-Fi on? Check with: ipconfig getifaddr en0" >&2
@@ -55,11 +66,45 @@ if [ -z "$IP" ]; then
 fi
 
 PORT="${PORT:-3000}"
+
+# Said plainly, before Next says it as a raw Node stack trace.
+#
+# Something already listening on the port is the likeliest reason this does not
+# start, and `EADDRINUSE` buried in a `net.js` backtrace does not look like
+# "you already have a dev server running" to anyone reading it in a hurry.
+# Captured once rather than asked twice: between two calls the listener can
+# vanish, and under `pipefail` the second one failing would end the script
+# before it printed the advice.
+if listeners="$(lsof -nP -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null)" && [ -n "$listeners" ]; then
+  echo "Something is already listening on port $PORT:" >&2
+  # One consumer, not three. `tail | head | sed` under `pipefail` lets `head`
+  # close the pipe early, `tail` take a SIGPIPE, and the script end before it
+  # prints the advice below - the same trap this script already had once.
+  printf '%s\n' "$listeners" | awk 'NR >= 2 && NR <= 4 { print "  " $0 }' >&2
+  echo >&2
+  echo "  Stop it, or run this on another port:  PORT=3001 npm run dev:phone" >&2
+  exit 1
+fi
+
 DIR=certificates
 KEY="$DIR/localhost-key.pem"
 CRT="$DIR/localhost.pem"
 
 # -------------------------------------------------------------- certificate
+
+# Every address `lan_addresses` found, so whichever one the phone can actually
+# reach is named by the certificate. A certificate that does not name the
+# address you typed is rejected by Safari outright, with no option to continue.
+san_list() {
+  local out="" ip
+  while IFS= read -r ip; do
+    if [ -n "$ip" ]; then out="${out}IP:$ip,"; fi
+  done <<EOF_ADDR
+$ADDRESSES
+EOF_ADDR
+  echo "${out}IP:127.0.0.1,DNS:localhost"
+}
+
 
 # Everything that has to hold before an existing pair is reused. A certificate
 # failing any of these makes `next dev` either refuse to start or serve
@@ -112,7 +157,7 @@ if ! cert_is_usable; then
   openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
     -keyout "$tmpkey" -out "$tmpcrt" \
     -subj "/CN=AmReceipts dev" \
-    -addext "subjectAltName=IP:$IP,IP:127.0.0.1,DNS:localhost" >/dev/null 2>&1
+    -addext "subjectAltName=$(san_list)" >/dev/null 2>&1
   openssl x509 -in "$tmpcrt" -noout >/dev/null 2>&1 || {
     echo "Certificate generation failed. Is openssl on PATH?" >&2
     exit 1
@@ -130,6 +175,14 @@ echo
 echo "  On the phone, open:  https://$IP:$PORT"
 echo "  Both devices must be on the same Wi-Fi."
 echo "  The phone will warn about the certificate once — continue past it."
+# Listed because the first one is a best guess. If the phone cannot reach it,
+# one of these will be the right one, and the certificate names them all.
+others="$(printf '%s\n' "$ADDRESSES" | tail -n +2)"
+if [ -n "$others" ]; then
+  echo
+  echo "  If that address does not answer, this machine is also at:"
+  printf '%s\n' "$others" | sed "s|^|    https://|;s|$|:$PORT|"
+fi
 echo
 
 exec npx next dev --experimental-https \
