@@ -77,6 +77,18 @@ export default function SessionClient({
 
   const openReceipt = openReceiptId ? s.receipts.find((r) => r.id === openReceiptId) : undefined;
 
+  /**
+   * Take a thrown-away photograph out of the burst.
+   *
+   * Both the state and the draft, or stepping back to the camera would put the
+   * deleted tile back on the strip - and it would then be a tile for a receipt
+   * that no longer exists.
+   */
+  const forgetCapture = (captureId: string) => {
+    setBurst((b) => (b ? b.filter((shot) => shot.id !== captureId) : b));
+    burstDraft.current = burstDraft.current?.filter((shot) => shot.id !== captureId) ?? null;
+  };
+
   /** Leave the whole capture stack and go back to the visit. */
   const closeStack = () => {
     setOpenReceiptId(null);
@@ -124,6 +136,7 @@ export default function SessionClient({
           }}
           onOpen={(id) => setOpenReceiptId(id)}
           onFinish={closeStack}
+          onDiscard={forgetCapture}
         />
       </div>
     );
@@ -143,6 +156,7 @@ export default function SessionClient({
             burstDraft.current = null;
             setTab("items");
           }}
+          onDiscarded={forgetCapture}
           onReview={(shots) => {
             burstDraft.current = shots;
             setBurst(shots);

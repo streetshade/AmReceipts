@@ -173,9 +173,12 @@ export interface FlushResult {
  * receipts on an expired session.
  */
 export function isPermanentRejection(status: number): boolean {
-  // 400 malformed, 404 the session no longer exists, 413 too large,
-  // 415 wrong type, 422 unprocessable. Retrying none of these can help.
-  return status === 400 || status === 404 || status === 413 || status === 415 || status === 422;
+  // 400 malformed, 404 the session no longer exists, 410 the user deleted this
+  // photograph, 413 too large, 415 wrong type, 422 unprocessable. Retrying none
+  // of these can help.
+  return (
+    status === 400 || status === 404 || status === 410 || status === 413 || status === 415 || status === 422
+  );
 }
 
 // One flush at a time, process-wide. Mount and the "online" event can fire

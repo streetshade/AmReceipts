@@ -167,6 +167,26 @@ model Job {
   @@unique([userId, number])
 }
 
+// A photograph the user threw away, remembered so it cannot come back.
+//
+// Deleting a bad capture is not just deleting a row. The same photograph may be
+// mid-upload, or sitting in the phone's offline queue, and neither can be
+// called back - so a receipt the user deleted would be recreated by a request
+// that was already in the air. Nothing on the device can prevent that; only the
+// server can, by refusing the upload when it arrives.
+//
+// Keyed by the id the device minted at the shutter, the same one that makes
+// uploads idempotent.
+model DiscardedCapture {
+  id        String         @id @default(cuid())
+  sessionId String
+  session   ExpenseSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  captureId String
+  createdAt DateTime       @default(now())
+
+  @@unique([sessionId, captureId])
+}
+
 // A capture session: one trip / errand / expense-worthy event. Groups receipts
 // and scanned products, and carries the assignment to a job or a travel reason.
 model ExpenseSession {
@@ -196,6 +216,7 @@ model ExpenseSession {
 
   receipts     Receipt[]
   scannedItems ScannedItem[]
+  discarded    DiscardedCapture[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

@@ -6,6 +6,7 @@ import { handler, json, error, requireUserId } from "@/lib/api";
 import { getOcrProvider } from "@/lib/providers/ocr";
 import { extractPdfText, parsePdfText } from "@/lib/providers/pdf";
 import { reconcilePaymentMethod } from "@/lib/payments";
+import { forgetUpload } from "@/lib/uploads";
 
 type Params = { params: { id: string } };
 
@@ -35,6 +36,19 @@ export const POST = handler(async (req: Request, { params }: Params) => {
   if (!(file instanceof File)) return error("An image or PDF file is required", 422);
   if (file.size === 0) return error("The file is empty", 422);
   if (file.size > MAX_BYTES) return error("File exceeds the 12MB limit", 413);
+
+  // Refused outright if this photograph was thrown away.
+  //
+  // The delete cannot reach a request already in the air, or a blob sitting in
+  // the phone's offline queue, so this is the only place the two can be
+  // reconciled. 410 rather than 404: the offline queue treats it as permanent
+  // and stops retrying, which is what "the user deleted it" means.
+  //
+  // This early check is a courtesy - it saves running OCR on a photograph
+  // nobody wants. It is not what makes the rule hold; see `refuseIfDiscarded`.
+  if (captureId && (await isDiscarded(session.id, captureId))) {
+    return error("That photo was deleted", 410);
+  }
 
   // Answered before anything is written. A retry after a lost response finds
   // the receipt its first attempt created and returns it, rather than adding a
@@ -76,6 +90,10 @@ export const POST = handler(async (req: Request, { params }: Params) => {
     const failed = await prisma.receipt.create({
       data: { sessionId: session.id, imagePath, status: "failed", captureId },
     });
+    // An unreadable receipt is still a receipt, and still has to answer for
+    // having been thrown away while it was being read.
+    const refused = await refuseIfDiscarded(session.id, captureId, failed);
+    if (refused) return refused;
     return json({ id: failed.id, status: "failed", message }, 201);
   };
 
@@ -126,8 +144,59 @@ export const POST = handler(async (req: Request, { params }: Params) => {
     include: { lineItems: true, paymentMethod: true },
   });
 
+  const refused = await refuseIfDiscarded(session.id, captureId, receipt);
+  if (refused) return refused;
+
   return json({ receipt }, 201);
 });
+
+async function isDiscarded(sessionId: string, captureId: string): Promise<boolean> {
+  const row = await prisma.discardedCapture.findUnique({
+    where: { sessionId_captureId: { sessionId, captureId } },
+    select: { id: true },
+  });
+  return Boolean(row);
+}
+
+/**
+ * Undo this upload if the user threw the photograph away while it was running.
+ *
+ * The check at the top of the route is not enough on its own: between it and
+ * the insert there is an OCR pass, seconds long, and a delete arriving in that
+ * window would find no receipt to remove and then watch one appear.
+ *
+ * So the order here is deliberately create-then-check, mirroring the discard
+ * route's write-then-look. Each side commits before it looks for the other, and
+ * for both to miss, each read would have to precede the other's commit while
+ * following its own - which cannot be arranged. One of them always removes the
+ * receipt.
+ *
+ * What that buys is the STATE: a discarded capture never keeps a receipt. It is
+ * not a promise about this response. An upload that commits, reads no
+ * tombstone, and is then deleted by a discard landing microseconds later still
+ * answers 201 - correctly, at the moment it was asked. The device reconciles on
+ * its next refresh, and the receipt is already gone.
+ */
+async function refuseIfDiscarded(
+  sessionId: string,
+  captureId: string | null,
+  receipt: { id: string; imagePath: string | null },
+): Promise<Response | null> {
+  if (!captureId) return null;
+  if (!(await isDiscarded(sessionId, captureId))) return null;
+
+  try {
+    await prisma.receipt.delete({ where: { id: receipt.id } });
+  } catch (e) {
+    // P2025 is the expected race: the discard route deleted it first, which is
+    // the outcome this exists to reach. Anything else is a real failure, and
+    // swallowing it would leave a tombstoned receipt on the visit - with its
+    // photograph unlinked underneath it - and tell the caller it was refused.
+    if ((e as { code?: string }).code !== "P2025") throw e;
+  }
+  await forgetUpload(receipt.imagePath);
+  return error("That photo was deleted", 410);
+}
 
 /**
  * Create the receipt, tolerating a concurrent request that got there first.

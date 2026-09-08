@@ -21,6 +21,14 @@ export interface CaptureShot {
    */
   preview: string;
   status: "uploading" | "read" | "queued" | "failed";
+  /**
+   * The receipt this photograph became, once it has.
+   *
+   * Without it, deleting a tile whose upload had already succeeded planned a
+   * local removal: the tile vanished, the receipt stayed on the visit, and the
+   * total went on including a photograph the user had thrown away.
+   */
+  receiptId: string | null;
   totalCents: number | null;
   merchant: string | null;
   message?: string;

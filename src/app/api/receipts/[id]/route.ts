@@ -2,6 +2,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { handler, json, error, requireUserId } from "@/lib/api";
 import { reconcilePaymentMethod } from "@/lib/payments";
+import { forgetUpload } from "@/lib/uploads";
 
 type Params = { params: { id: string } };
 
@@ -155,5 +156,6 @@ export const DELETE = handler(async (_req: Request, { params }: Params) => {
   const receipt = await ownReceipt(params.id, userId);
   if (!receipt) return error("Receipt not found", 404);
   await prisma.receipt.delete({ where: { id: receipt.id } });
+  await forgetUpload(receipt.imagePath);
   return json({ ok: true });
 });

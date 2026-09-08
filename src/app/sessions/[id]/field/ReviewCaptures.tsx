@@ -19,6 +19,7 @@ import { useRouter } from "next/navigation";
 import { formatCents } from "@/lib/money";
 import { entryConcerns, summariseBurst, type BurstEntry, type Concern } from "@/lib/receiptQuality";
 import { flush, listPending, offlineQueueAvailable } from "@/lib/offlineQueue";
+import { discardCapture, planDiscard } from "@/lib/captureDiscard";
 import { isOnline } from "@/lib/online";
 import type { ReceiptDTO } from "@/lib/dto";
 import type { CaptureShot } from "@/lib/capture";
@@ -31,6 +32,7 @@ export default function ReviewCaptures({
   onBack,
   onOpen,
   onFinish,
+  onDiscard,
 }: {
   sessionId: string;
   captures: CaptureShot[];
@@ -42,6 +44,8 @@ export default function ReviewCaptures({
   onOpen: (receiptId: string) => void;
   /** Done here — back to the visit. */
   onFinish: () => void;
+  /** A photograph was thrown away; take it out of the burst. */
+  onDiscard: (captureId: string) => void;
 }) {
   const router = useRouter();
   const alive = useRef(true);
@@ -158,6 +162,43 @@ export default function ReviewCaptures({
     return () => window.removeEventListener("online", onOnline);
   }, [outstanding, sync]);
 
+  // Which row is asking "delete?". Deleting is not undoable - the paper is in
+  // a bin and there is no second copy of the photograph - so it takes a second
+  // tap, and disarms itself so a stray one cannot be left primed.
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const [discardError, setDiscardError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!confirming) return;
+    const t = setTimeout(() => setConfirming(null), 5000);
+    return () => clearTimeout(t);
+  }, [confirming]);
+
+  const discard = useCallback(
+    async (entry: BurstEntry) => {
+      setConfirming(null);
+      setDiscardError(null);
+      const plan = planDiscard({
+        receiptId: entry.receipt?.id ?? null,
+        status: entry.shot.status,
+        queued: queuedIds === null ? null : queuedIds.has(entry.shot.id),
+      });
+      const result = await discardCapture(sessionId, entry.shot.id, plan);
+      if (!result.ok) {
+        if (alive.current) setDiscardError(result.error ?? "Couldn't delete that one.");
+        return;
+      }
+      // Taken out of the burst whether or not this screen is still up. The
+      // burst belongs to the visit, not to this component, and a user who
+      // pressed Back the instant they confirmed would otherwise find the
+      // deleted photograph waiting for them on the camera strip.
+      onDiscard(entry.shot.id);
+      if (!alive.current) return;
+      await readQueue();
+      router.refresh();
+    },
+    [onDiscard, queuedIds, readQueue, router, sessionId],
+  );
+
   const heading = captures.length === 1 ? "1 new receipt" : `${captures.length} new receipts`;
   const settled = summary.needsCheck === 0 && summary.waiting === 0;
 
@@ -220,6 +261,12 @@ export default function ReviewCaptures({
           )}
         </section>
 
+        {discardError && (
+          <p role="alert" className="rounded-[14px] border border-field-dangerLine bg-field-dangerFill px-4 py-3 text-f-16">
+            {discardError}
+          </p>
+        )}
+
         {entries.map((entry, i) => (
           <CaptureRow
             key={entry.shot.id}
@@ -227,6 +274,9 @@ export default function ReviewCaptures({
             entry={entry}
             concerns={entryConcerns(entry, context)}
             onOpen={onOpen}
+            asking={confirming === entry.shot.id}
+            onAsk={() => setConfirming(confirming === entry.shot.id ? null : entry.shot.id)}
+            onConfirm={() => void discard(entry)}
           />
         ))}
 
@@ -251,11 +301,18 @@ function CaptureRow({
   entry,
   concerns,
   onOpen,
+  asking,
+  onAsk,
+  onConfirm,
 }: {
   index: number;
   entry: BurstEntry;
   concerns: Concern[];
   onOpen: (receiptId: string) => void;
+  /** This row is asking whether to delete. */
+  asking: boolean;
+  onAsk: () => void;
+  onConfirm: () => void;
 }) {
   const receipt = entry.receipt;
   // The head of the list: the rules return them most important first, and one
@@ -272,14 +329,17 @@ function CaptureRow({
         <span className="block text-f-15 text-field-muted">{metaFor(receipt)}</span>
         {concern && (
           <span
-            className={`mt-2 inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-f-14 font-semibold ${
+            // A rectangle, not a pill: these messages wrap to two or three
+            // lines on a phone, and a 999px radius on a three-line box bows the
+            // text in at both ends.
+            className={`mt-2 inline-flex items-start gap-2 rounded-[10px] border px-2.5 py-1 text-f-14 font-semibold ${
               concern.severity === "check"
                 ? "border-field-warnLine bg-field-warnFill text-field-warnText"
                 : "border-field-line bg-field-ground text-field-muted"
             }`}
           >
             {concern.severity === "check" && (
-              <span aria-hidden className="block h-2 w-2 rounded-full bg-field-warnDot" />
+              <span aria-hidden className="mt-[7px] block h-2 w-2 shrink-0 rounded-full bg-field-warnDot" />
             )}
             {concern.message}
           </span>
@@ -294,19 +354,59 @@ function CaptureRow({
     </>
   );
 
-  // A photograph with no receipt yet has nothing to open. It is still shown, so
-  // the count in the heading and the number of rows agree.
-  if (!receipt) {
-    return <div className="flex items-center gap-3 rounded-[16px] border border-field-line bg-field-paper p-4">{body}</div>;
-  }
-
   return (
-    <button
-      onClick={() => onOpen(receipt.id)}
-      className="flex items-center gap-3 rounded-[16px] border border-field-line bg-field-paper p-4 text-left transition hover:border-field-teal"
+    <div
+      className={`rounded-[16px] border bg-field-paper transition ${
+        asking ? "border-field-dangerLine" : "border-field-line"
+      }`}
     >
-      {body}
-    </button>
+      {/*
+        A photograph with no receipt yet has nothing to open, but it is still
+        shown - and still deletable - so the count in the heading and the number
+        of rows agree.
+      */}
+      {receipt ? (
+        <button onClick={() => onOpen(receipt.id)} className="flex w-full items-center gap-3 p-4 text-left">
+          {body}
+        </button>
+      ) : (
+        <div className="flex items-center gap-3 p-4">{body}</div>
+      )}
+
+      {/*
+        Delete lives on the row as well as on the camera strip, because this is
+        the screen where you can see WHY a photograph is bad - the duplicate
+        warning, the total that would not read. Two taps, because it cannot be
+        undone: the paper is in a bin and there is no second copy of the
+        photograph anywhere.
+      */}
+      <div className="flex items-center justify-end gap-2 border-t border-field-rule px-4 py-2">
+        {asking ? (
+          <>
+            <button
+              onClick={onAsk}
+              className="min-h-[44px] rounded-[12px] border-[1.5px] border-field-line px-4 text-f-16 font-semibold"
+            >
+              Keep
+            </button>
+            <button
+              onClick={onConfirm}
+              className="min-h-[44px] rounded-[12px] border-[1.5px] border-field-dangerLine bg-field-dangerFill px-4 text-f-16 font-bold"
+            >
+              Delete photo {index}
+            </button>
+          </>
+        ) : (
+          <button
+            onClick={onAsk}
+            aria-label={`Delete photo ${index}`}
+            className="min-h-[44px] rounded-[12px] px-3 text-f-16 font-semibold text-field-muted hover:text-field-ink"
+          >
+            Delete
+          </button>
+        )}
+      </div>
+    </div>
   );
 }
 

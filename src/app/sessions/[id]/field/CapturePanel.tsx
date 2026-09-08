@@ -19,6 +19,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { formatCents } from "@/lib/money";
 import { enqueue, flush, listPending, offlineQueueAvailable, isPermanentRejection } from "@/lib/offlineQueue";
+import { discardCapture, planDiscard } from "@/lib/captureDiscard";
 import type { CaptureShot } from "@/lib/capture";
 
 /**
@@ -63,6 +64,7 @@ export default function CapturePanel({
   onDone,
   onItems,
   onReview,
+  onDiscarded,
   initialShots,
 }: {
   sessionId: string;
@@ -78,6 +80,8 @@ export default function CapturePanel({
    * must still appear in a list headed "3 new receipts".
    */
   onReview: (shots: CaptureShot[]) => void;
+  /** A photograph was thrown away; take it out of the burst the visit holds. */
+  onDiscarded?: (captureId: string) => void;
   /**
    * The burst already taken, when the camera is re-entered from review.
    *
@@ -101,6 +105,22 @@ export default function CapturePanel({
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [streaming, setStreaming] = useState(false);
   const [queued, setQueued] = useState(0);
+  // The tile currently asking "delete?", if any. Deleting a photograph is not
+  // undoable - the paper is in a bin by now - so it takes two taps, and a
+  // 60x74 tile is too small to hold a confirm button beside a cancel one.
+  const [confirming, setConfirming] = useState<string | null>(null);
+  /**
+   * Captures thrown away while their upload was still in flight.
+   *
+   * The fetch cannot be called back, so it will create a receipt a moment after
+   * the user deleted the tile. Rather than forbid deleting during an upload -
+   * which is exactly when a bad shot is most obvious - the id is remembered and
+   * the receipt is deleted the instant it exists.
+   */
+  const discarded = useRef<Set<string>>(new Set());
+  // Deleting is the first thing on this screen that outlives it: the request
+  // can still be in flight when the user steps to review.
+  const alive = useRef(true);
 
   // Kept in refs, not state: the analysis loop runs every frame and must not
   // re-render the component or capture a stale closure.
@@ -109,6 +129,13 @@ export default function CapturePanel({
   const armedAt = useRef<number>(0);
   const busy = useRef(false);
   const deadline = useRef<number | null>(null);
+
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
 
   // --- camera ------------------------------------------------------------
   useEffect(() => {
@@ -210,6 +237,13 @@ export default function CapturePanel({
         if (!res.ok) {
           // A server that is busy, rate-limiting or momentarily broken is not a
           // reason to lose a receipt. Only a permanent refusal is.
+          // Thrown away while this was in the air: do not queue it for later.
+          // The server already refuses it, but queueing would spend a request
+          // and a retry finding that out.
+          if (discarded.current.has(id)) {
+            setShots((p) => p.filter((s) => s.id !== id));
+            return;
+          }
           if (!isPermanentRejection(res.status) && offlineQueueAvailable()) {
             try {
               const { evicted } = await enqueue({ id, sessionId, filename, blob, capturedAt: Date.now() });
@@ -226,6 +260,24 @@ export default function CapturePanel({
         // A scanned PDF or a failed read still stores the receipt and returns a
         // message: surfaced on the tile rather than thrown away.
         const r = data.receipt ?? data;
+        if (discarded.current.has(id)) {
+          // Thrown away while this was in the air. The server was told when the
+          // user tapped, so the receipt this request just made is deleted by
+          // capture id - and the id is NOT forgotten, because a failed delete
+          // must leave something for the next attempt to find.
+          void discardCapture(sessionId, id, { kind: "inflight" }).then((result) => {
+            // Only on success. `discardCapture` RESOLVES with `ok: false` on a
+            // refusal or a dropped connection rather than rejecting, so an
+            // unconditional delete here forgot the tombstone after every failed
+            // attempt and left the receipt behind for good.
+            if (!result.ok) return;
+            discarded.current.delete(id);
+            onDiscarded?.(id);
+            router.refresh();
+          });
+          setShots((p) => p.filter((s) => s.id !== id));
+          return;
+        }
         setShots((p) =>
           p.map((s) =>
             s.id === id
@@ -234,6 +286,7 @@ export default function CapturePanel({
                   status: r.status === "failed" ? "failed" : "read",
                   totalCents: typeof r.total === "number" ? r.total : null,
                   merchant: r.merchant ?? null,
+                  receiptId: typeof r.id === "string" ? r.id : null,
                   message: data.message,
                 }
               : s,
@@ -244,6 +297,10 @@ export default function CapturePanel({
         // Genuinely durable, not a reassuring label on a Blob in memory: the
         // photo goes to IndexedDB and is retried when the connection returns.
         // The paper receipt is already in a bin by now.
+        if (discarded.current.has(id)) {
+          setShots((p) => p.filter((s) => s.id !== id));
+          return;
+        }
         if (offlineQueueAvailable()) {
           try {
             const { evicted } = await enqueue({ id, sessionId, filename, blob, capturedAt: Date.now() });
@@ -265,7 +322,7 @@ export default function CapturePanel({
   /** Put a tile on the strip at once, so nothing can be captured invisibly. */
   const beginShot = useCallback((preview: string): string => {
     const id = crypto.randomUUID();
-    setShots((prev) => [...prev, { id, preview, status: "uploading", totalCents: null, merchant: null }]);
+    setShots((prev) => [...prev, { id, preview, status: "uploading", totalCents: null, merchant: null, receiptId: null }]);
     return id;
   }, []);
 
@@ -470,6 +527,49 @@ export default function CapturePanel({
     }
   }, [sessionId]);
 
+  /**
+   * Throw a photograph away.
+   *
+   * The tile goes immediately, because the user has just told us twice that
+   * they want it gone and a tile that lingers reads as a failure. If the
+   * server refuses, the tile comes back with the reason on it rather than the
+   * deletion being silently lost.
+   */
+  const discard = useCallback(
+    async (shot: Shot) => {
+      setConfirming(null);
+      const plan = planDiscard({
+        receiptId: shot.receiptId,
+        status: shot.status,
+        // The camera screen's own view: a tile it marked `queued` is queued.
+        queued: shot.status === "queued",
+      });
+      // Remembered before anything else, so an upload that lands while the
+      // request below is in flight is recognised and removed rather than
+      // quietly reappearing on the visit.
+      if (plan.kind === "inflight") discarded.current.add(shot.id);
+      setShots((p) => p.filter((s) => s.id !== shot.id));
+
+      const result = await discardCapture(sessionId, shot.id, plan);
+      if (!result.ok) {
+        // The visit is deliberately NOT told, so the tile is still in the burst
+        // if the user comes back to the camera - a failed delete must leave
+        // something to try again on.
+        discarded.current.delete(shot.id);
+        if (alive.current) setShots((p) => [...p, { ...shot, status: "failed", message: result.error }]);
+        return;
+      }
+      // Told regardless of whether this screen is still mounted: the burst
+      // belongs to the visit, not to the camera, and stepping away the instant
+      // you confirm must not bring the photograph back.
+      onDiscarded?.(shot.id);
+      if (!alive.current) return;
+      void refreshQueued();
+      router.refresh();
+    },
+    [onDiscarded, refreshQueued, router, sessionId],
+  );
+
   const readCount = shots.filter((s) => s.status === "read").length;
 
   // Review is where the burst is confirmed, so the three ways of finishing a
@@ -597,36 +697,80 @@ export default function CapturePanel({
       {/* Burst history */}
       {shots.length > 0 && (
         <div className="flex items-center gap-2.5 overflow-x-auto border-t border-field-inkLine bg-field-camera px-4 py-3">
-          {shots.map((s, i) => (
-            <button
-              key={s.id}
-              onClick={review}
-              className="relative h-[74px] w-[60px] shrink-0 overflow-hidden rounded-[12px] border-2 border-field-inkLine hover:border-field-accent"
-            >
-              {s.preview ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={s.preview} alt="" className="h-full w-full object-cover" />
-              ) : (
-                <span className="flex h-full w-full items-center justify-center bg-field-inkRaised text-f-13 font-semibold text-field-mutedDarkAlt">
-                  PDF
-                </span>
-              )}
-              <span className="absolute left-1 top-1 flex h-[22px] w-[22px] items-center justify-center rounded-full bg-field-accent text-f-13 font-bold text-field-accentText">
-                {i + 1}
-              </span>
-              <span className="absolute bottom-1 left-1 text-f-12 font-semibold tabular-nums text-field-mutedDarkAlt">
-                {s.status === "uploading"
-                  ? "…"
-                  : s.status === "queued"
-                    ? "⤒"
-                    : s.status === "failed"
-                      ? "!"
-                      : s.totalCents !== null
-                        ? formatCents(s.totalCents)
-                        : "—"}
-              </span>
-            </button>
-          ))}
+          {shots.map((s, i) => {
+            const asking = confirming === s.id;
+            return (
+              // A tile and its delete button, which cannot be nested inside it.
+              <div key={s.id} className="relative h-[74px] w-[60px] shrink-0">
+                <button
+                  onClick={() => (asking ? void discard(s) : review())}
+                  aria-label={asking ? `Delete photo ${i + 1}` : `Photo ${i + 1} — review`}
+                  className={`relative h-full w-full overflow-hidden rounded-[12px] border-2 ${
+                    asking ? "border-field-dangerLine" : "border-field-inkLine hover:border-field-accent"
+                  }`}
+                >
+                  {s.preview ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={s.preview} alt="" className="h-full w-full object-cover" />
+                  ) : (
+                    <span className="flex h-full w-full items-center justify-center bg-field-inkRaised text-f-13 font-semibold text-field-mutedDarkAlt">
+                      PDF
+                    </span>
+                  )}
+
+                  {asking ? (
+                    // The whole tile becomes the confirm target. At 60x74 there
+                    // is no room for a Delete beside a Cancel, and the one that
+                    // deserves the bigger target is the one you can undo -
+                    // which is Cancel, in the corner.
+                    <span className="absolute inset-0 flex flex-col items-center justify-center bg-[rgba(11,22,20,.82)] px-1 text-center">
+                      <span className="text-f-13 font-bold leading-tight text-white">Delete?</span>
+                      <span className="text-f-11 text-field-mutedDarkAlt">tap again</span>
+                    </span>
+                  ) : (
+                    <>
+                      <span className="absolute left-1 top-1 flex h-[22px] w-[22px] items-center justify-center rounded-full bg-field-accent text-f-13 font-bold text-field-accentText">
+                        {i + 1}
+                      </span>
+                      <span className="absolute bottom-1 left-1 text-f-12 font-semibold tabular-nums text-field-mutedDarkAlt">
+                        {s.status === "uploading"
+                          ? "…"
+                          : s.status === "queued"
+                            ? "⤒"
+                            : s.status === "failed"
+                              ? "!"
+                              : s.totalCents !== null
+                                ? formatCents(s.totalCents)
+                                : "—"}
+                      </span>
+                    </>
+                  )}
+                </button>
+
+                {/*
+                  Auto-capture guarantees bad photographs - a thumb, a table
+                  top, the same receipt twice - so throwing one away has to be
+                  possible from the strip, where it is obvious. It takes two
+                  taps because it cannot be undone: the paper is already in a
+                  bin, and there is no second copy of the photograph anywhere.
+                */}
+                <button
+                  onClick={() => setConfirming(asking ? null : s.id)}
+                  aria-label={asking ? `Keep photo ${i + 1}` : `Delete photo ${i + 1}`}
+                  // The visible circle is 28px, which is all a 60px tile can
+                  // spare, but the pseudo-element stretches the tap target to
+                  // roughly 40px. This is pressed with gloves on.
+                  className={`after:absolute after:-inset-1.5 after:content-[''] absolute -right-1 -top-1 flex h-7 w-7 items-center justify-center rounded-full border-2 text-f-14 font-bold leading-none ${
+                    asking
+                      ? "border-field-accent bg-field-accent text-field-accentText"
+                      : "border-field-inkLine bg-field-camera text-field-mutedDarkAlt"
+                  }`}
+                >
+                  {asking ? "\u21A9" : "\u00D7"}
+                </button>
+              </div>
+            );
+          })}
           <span className="shrink-0 text-f-14 text-field-mutedDark">
             {queued > 0 ? `${queued} waiting for signal` : "Totals read in the background"}
           </span>

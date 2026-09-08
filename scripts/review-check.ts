@@ -21,6 +21,7 @@ import {
 } from "../src/lib/receiptQuality";
 import type { ReceiptDTO } from "../src/lib/dto";
 import type { CaptureShot } from "../src/lib/capture";
+import { planDiscard } from "../src/lib/captureDiscard";
 
 let failures = 0;
 function check(name: string, passed: boolean, detail = "") {
@@ -52,7 +53,7 @@ function receipt(over: Partial<ReceiptDTO> = {}): ReceiptDTO {
 }
 
 function shot(over: Partial<CaptureShot> = {}): CaptureShot {
-  return { id: `s${++seq}`, preview: "data:,", status: "read", totalCents: null, merchant: null, ...over };
+  return { id: `s${++seq}`, preview: "data:,", status: "read", totalCents: null, merchant: null, receiptId: null, ...over };
 }
 
 /** A row that produced a receipt. */
@@ -332,6 +333,44 @@ const allFine = [
 const fineSum = summariseBurst(allFine);
 check("a clean burst reports nothing to check", fineSum.needsCheck === 0 && fineSum.waiting === 0);
 check("and its total is the sum of its receipts", fineSum.totalCents === 300);
+
+// --------------------------------------------------------------- discarding
+
+// Auto-capture guarantees bad photographs, so the burst has to be deletable.
+// What "delete" means depends on how far the photograph got, and getting it
+// wrong loses a receipt in one direction or resurrects one in the other.
+const plan = (receiptId: string | null, status: CaptureShot["status"], queued: boolean | null) =>
+  planDiscard({ receiptId, status, queued }).kind;
+
+check("a capture that became a receipt deletes the receipt", plan("r1", "read", false) === "server");
+check("the receipt wins even when a stale queue entry remains", plan("r1", "queued", true) === "server");
+check("a queued photograph goes through the queue", plan(null, "queued", true) === "queued");
+// The only case that never leaves the phone: nothing was sent and nothing is
+// on its way, so there is nothing for the server to be told about.
+check("a refused photograph is only a tile", plan(null, "failed", false) === "local");
+// The dangerous ones. An upload in the air cannot be recalled, so the server
+// has to be told - it is the only thing that can refuse the request when it
+// lands. Planning these as local was how a deleted photograph came back.
+check("one still uploading is reported to the server", plan(null, "uploading", false) === "inflight");
+check("nor is one whose queue state is unknown treated as local", plan(null, "uploading", null) === "inflight");
+check("a read status with no receipt is still reported", plan(null, "read", false) === "inflight");
+// A failed capture that somehow made it into the queue is still queued: the
+// queue is the thing that would send it again.
+check("a failed capture still in the queue is dequeued", plan(null, "failed", true) === "queued");
+// Only a capture that never left the phone may skip the server. Anything that
+// was sent, or is about to be, has to reach it - that is the whole reason the
+// tombstone exists.
+check(
+  "the only plan that skips the server is the one that never left the phone",
+  (
+    [
+      ["r1", "read", false],
+      [null, "queued", true],
+      [null, "uploading", false],
+      [null, "read", null],
+    ] as const
+  ).every(([r, st, q]) => plan(r, st, q) !== "local"),
+);
 
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);
