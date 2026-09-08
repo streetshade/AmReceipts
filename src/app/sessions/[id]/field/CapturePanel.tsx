@@ -477,8 +477,9 @@ export default function CapturePanel({
     // duplicates as zero change, which dragged the noise floor to nothing and
     // set a bar no real camera could clear - the same never-fires failure this
     // was rewritten to cure, arriving by a different route. The detector
-    // refuses a repeated frame as well, but not asking for one is better than
-    // discarding it.
+    // deliberately does NOT refuse a repeated frame, because discarding
+    // identical frames stopped the window ever filling on a very clean camera,
+    // so not asking for one is the only protection there is.
     let stop = false;
     let handle = 0;
     const video = videoRef.current as FrameCallbackVideo | null;
@@ -685,7 +686,8 @@ export default function CapturePanel({
               {reading.baseline.toFixed(1)}, x{reading.motionRatio.toFixed(2)}){" "}
               {reading.steady ? "STILL" : "moving"}
               {" · "}
-              contrast {reading.detail.toFixed(0)} {reading.hasDetail ? "ok" : "TOO FLAT"}
+              contrast {reading.detail.toFixed(0)} · paper {reading.paperFill.toFixed(2)}/
+              {reading.paperSpread.toFixed(2)} · {reading.hasSubject ? "SUBJECT" : "no subject"}
             </span>
           )}
         </div>

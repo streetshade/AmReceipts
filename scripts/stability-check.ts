@@ -86,13 +86,13 @@ const r1 = rng(11);
 const handheld = run(repeat(60, () => receipt(0, 6, r1)));
 check("a receipt held still, with ordinary sensor noise, fires", handheld.ready, JSON.stringify(handheld));
 check("  and reports itself steady", handheld.steady);
-check("  and sees enough contrast", handheld.hasDetail, String(handheld.detail));
+check("  and sees a subject", handheld.hasSubject, String(handheld.detail));
 // The distinction that matters, and the reason this is a spread and not a
 // gradient: uncorrelated sensor noise is itself high-frequency detail, so a
 // bare surface under a noisy camera looked exactly like printed text.
 const r6b = rng(21);
 const noisyTable = run(repeat(60, () => blank(15, r6b)));
-check("a bare surface in a dim room is still not mistaken for a subject", !noisyTable.hasDetail, String(noisyTable.detail));
+check("a bare surface in a dim room is still not mistaken for a subject", !noisyTable.hasSubject, String(noisyTable.detail));
 // The other end of the same trade. A thermal receipt faded until ink and paper
 // are only 25 levels apart still has to fire; that is the direction worth being
 // wrong in, and it is why the gate sits below what a bare surface reaches in
@@ -259,11 +259,174 @@ check("  so it still fires", stillRatio.ready);
 const r6 = rng(16);
 const table = run(repeat(60, () => blank(6, r6)));
 check("a bare table held still does not fire", !table.ready, JSON.stringify(table));
-check("  because there is no contrast in it", !table.hasDetail, String(table.detail));
+check("  because there is no contrast in it", !table.hasSubject, String(table.detail));
 check("  even though it is perfectly steady", table.steady);
 
 const covered = run(repeat(60, () => blank(0)));
 check("a covered lens does not fire", !covered.ready);
+
+// -------------------------------------------------------- is it paper?
+
+// Contrast alone said yes to anything textured, and in the field the phone
+// photographed the desk it was lying on. These are the scenes it has to tell
+// apart, and both halves matter: everything a receipt is must fire, and
+// everything a job site is must not.
+
+/** A scene, still, with sensor noise, run until the detector has an opinion. */
+function scene(px: (x: number, y: number, noise: () => number) => number, seed: number): StabilityReading {
+  const random = rng(seed);
+  const make = () => {
+    const data = new Uint8ClampedArray(W * H * 4);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = (y * W + x) * 4;
+        const v = Math.max(0, Math.min(255, px(x, y, random)));
+        data[i] = data[i + 1] = data[i + 2] = v;
+        data[i + 3] = 255;
+      }
+    }
+    return data;
+  };
+  const d = new StabilityDetector();
+  let last = d.push(make(), W, H);
+  for (let i = 0; i < 40; i++) last = d.push(make(), W, H);
+  return last;
+}
+
+const print = (x: number, y: number) => (x % 7 < 2 && y % 5 !== 4 ? 60 : 230);
+const onDark = (inside: boolean, x: number, y: number, n: () => number) =>
+  (inside ? print(x, y) : 40) + (n() - 0.5) * 12;
+
+const fires: [string, StabilityReading][] = [
+  ["a receipt filling the frame", scene((x, y, n) => print(x, y) + (n() - 0.5) * 12, 90)],
+  ["a receipt on a dark surface", scene((x, y, n) => onDark(x > 12 && x < 52 && y > 6 && y < 42, x, y, n), 91)],
+  ["a receipt held at 11 degrees", scene((x, y, n) => { const sx = Math.round(x - (y - 24) * 0.2);
+    return onDark(sx > 12 && sx < 52 && y > 5 && y < 43, sx, y, n); }, 92)],
+  ["a receipt held at 31 degrees", scene((x, y, n) => { const sx = Math.round(x - (y - 24) * 0.6);
+    return onDark(sx > 12 && sx < 52 && y > 5 && y < 43, sx, y, n); }, 93)],
+  ["a receipt half out of frame", scene((x, y, n) => onDark(x < 34 && y > 6 && y < 42, x, y, n), 94)],
+  ["a small receipt in the middle", scene((x, y, n) => onDark(x > 22 && x < 42 && y > 14 && y < 34, x, y, n), 95)],
+  ["a faded receipt", scene((x, y, n) => (x % 7 < 2 && y % 5 !== 4 ? 200 : 225) + (n() - 0.5) * 10, 96)],
+];
+for (const [name, r] of fires) {
+  check(`${name} fires`, r.ready, `fill ${r.paperFill.toFixed(2)} wander ${r.paperSpread.toFixed(3)} contrast ${r.detail.toFixed(0)}`);
+}
+
+const refuses: [string, StabilityReading][] = [
+  ["a wooden desk", scene((x, y, n) => 120 + Math.sin(x * 0.7 + y * 0.2) * 45 + Math.sin(y * 1.9) * 20 + (n() - 0.5) * 30, 97)],
+  ["a dashboard with markings", scene((x, y, n) => (Math.sin(x * 0.4) * Math.cos(y * 0.5) > 0.3 ? 190 : 70) + (n() - 0.5) * 25, 98)],
+  ["a blank wall", scene((_x, _y, n) => 150 + (n() - 0.5) * 16, 99)],
+  ["a hand", scene((x, y, n) => ((x - 30) ** 2 / 900 + (y - 24) ** 2 / 400 < 1 ? 170 : 60) + Math.sin(x * 2.2) * 12 + (n() - 0.5) * 18, 100)],
+  ["a cluttered background", scene((x, y, n) => 100 + Math.sin(x * 1.3) * 60 + Math.cos(y * 1.7) * 50 + (n() - 0.5) * 40, 101)],
+  ["a keyboard", scene((x, y, n) => (x % 6 < 4 && y % 7 < 5 ? 90 : 180) + (n() - 0.5) * 20, 102)],
+];
+for (const [name, r] of refuses) {
+  check(`${name} does not`, !r.ready, `fill ${r.paperFill.toFixed(2)} wander ${r.paperSpread.toFixed(3)}`);
+}
+
+// Stated rather than left to be discovered: a bright solid object of roughly
+// constant width passes. A mug measures 0.097 against an angled receipt's
+// 0.090, and no line separates them. Refusing a receipt held at a slant is the
+// worse mistake, and a stray photograph is one tap to delete.
+{
+  const mug = scene((x, y, n) => ((x - 32) ** 2 / 200 + (y - 26) ** 2 / 260 < 1 ? 215 : 110 + Math.sin(x * 0.8) * 30) + (n() - 0.5) * 20, 103);
+  check("a mug is knowingly allowed through", mug.ready, `wander ${mug.paperSpread.toFixed(3)}`);
+}
+
+// The reason the paper verdict is a vote and not a per-frame test. A finger at
+// the edge, a shadow, one frame where the exposure moved the bright/dark split
+// - each is a frame that does not look like a sheet, and an all-or-nothing gate
+// is how this feature came to never fire at all the first time.
+{
+  const random = rng(110);
+  const d = new StabilityDetector();
+  const paper = () => {
+    const data = new Uint8ClampedArray(W * H * 4);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 4;
+      const v = (x > 12 && x < 52 && y > 6 && y < 42 ? (x % 7 < 2 && y % 5 !== 4 ? 60 : 230) : 40) + (random() - 0.5) * 12;
+      data[i] = data[i + 1] = data[i + 2] = Math.max(0, Math.min(255, v));
+      data[i + 3] = 255;
+    }
+    return data;
+  };
+  const smudged = () => {
+    // The same scene with a thumb across the lower third.
+    const data = paper();
+    for (let y = 32; y < H; y++) for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 4;
+      data[i] = data[i + 1] = data[i + 2] = 120 + (random() - 0.5) * 30;
+    }
+    return data;
+  };
+  let last: StabilityReading | null = null;
+  for (let i = 0; i < 60; i++) last = d.push(i % 9 === 0 ? smudged() : paper(), W, H);
+  check("one obscured frame in nine does not stop it firing", Boolean(last?.ready),
+    `fill ${last?.paperFill.toFixed(2)} wander ${last?.paperSpread.toFixed(3)}`);
+
+  // But a subject that is mostly obscured is not a subject.
+  const d2 = new StabilityDetector();
+  let mostly: StabilityReading | null = null;
+  for (let i = 0; i < 60; i++) mostly = d2.push(i % 3 === 0 ? paper() : smudged(), W, H);
+  check("a subject obscured most of the time does not fire", !mostly?.ready);
+}
+
+// The best-contrast receipt of all: genuinely black ink on genuinely white
+// paper. Otsu legitimately splits that at 0, and a guard written as
+// `split === 0` threw away exactly the case the feature exists for.
+{
+  const pure = scene((x, y) => (x % 7 < 2 && y % 5 !== 4 ? 0 : 255), 112);
+  check("a pure black-on-white receipt fires", pure.ready,
+    `fill ${pure.paperFill.toFixed(2)} wander ${pure.paperSpread.toFixed(3)}`);
+}
+
+// An exactly uniform frame - no noise at all to give Otsu anything to find.
+{
+  const flat = scene(() => 200, 113);
+  check("an exactly uniform frame is not called paper", !flat.hasSubject,
+    `fill ${flat.paperFill.toFixed(2)}`);
+}
+
+// Only the continuous band is measured. Stray bright rows above and below a
+// good sheet used to be averaged in with it, and could spoil a receipt that was
+// perfectly well framed.
+{
+  const withStrays = scene((x, y, n) => {
+    if (y === 1 || y === 45) return (x > 2 && x < 20 ? 240 : 40) + (n() - 0.5) * 10;   // unrelated bands
+    const inside = x > 12 && x < 52 && y > 8 && y < 40;
+    return (inside ? (x % 7 < 2 && y % 5 !== 4 ? 60 : 230) : 40) + (n() - 0.5) * 12;
+  }, 114);
+  check("stray bright rows outside the sheet do not spoil it", withStrays.ready,
+    `fill ${withStrays.paperFill.toFixed(2)} wander ${withStrays.paperSpread.toFixed(3)}`);
+}
+
+// Where receipts actually are: on a workbench. A textured background scatters
+// bright pixels to both edges of every row, so every background row used to
+// qualify on span alone, the "longest band" swallowed the frame, and the
+// half-covered background rows dragged the median down and rejected the sheet.
+{
+  const onWood = scene((x, y, n) => {
+    const inside = x > 14 && x < 50 && y > 10 && y < 38;
+    if (inside) return (x % 7 < 2 && y % 5 !== 4 ? 60 : 235) + (n() - 0.5) * 12;
+    return 120 + Math.sin(x * 0.7 + y * 0.2) * 45 + Math.sin(y * 1.9) * 20 + (n() - 0.5) * 30;
+  }, 115);
+  check("a receipt on a wooden bench fires", onWood.ready,
+    `fill ${onWood.paperFill.toFixed(2)} wander ${onWood.paperSpread.toFixed(3)}`);
+}
+
+// And the bench on its own still does not.
+{
+  const bench = scene((x, y, n) => 120 + Math.sin(x * 0.7 + y * 0.2) * 45 + Math.sin(y * 1.9) * 20 + (n() - 0.5) * 30, 116);
+  check("the bench on its own still does not", !bench.ready);
+}
+
+// A blank frame must not be reported as a perfect sheet, even in the
+// diagnostics: Otsu finds no split in it and every pixel lands on one side.
+{
+  const blankWhite = scene((_x, _y, n) => 250 + (n() - 0.5) * 4, 111);
+  check("a blank bright frame is not called paper", !blankWhite.hasSubject,
+    `fill ${blankWhite.paperFill.toFixed(2)} wander ${blankWhite.paperSpread.toFixed(3)}`);
+}
 
 // ------------------------------------------------------------------ warm-up
 

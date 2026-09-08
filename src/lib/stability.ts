@@ -130,12 +130,74 @@ const MAX_THRESHOLD = 24;
  */
 const MIN_DETAIL = 9;
 
+/**
+ * How solid the bright band has to be before it counts as a document.
+ *
+ * The contrast gate above cannot tell a receipt from a wooden desk - both have
+ * plenty of contrast - and in the field it duly photographed the desk. See
+ * `paperShapeOf` for what this measures and why it takes two figures rather
+ * than one.
+ */
+const MIN_PAPER_FILL = 0.66;
+
+/**
+ * How solid a single row must be to count as part of the sheet.
+ *
+ * Paper is solid; texture is scattered. On a workbench the wood's own bright
+ * ridges reach past the split, and without this every background row counted
+ * as part of the sheet - the "longest continuous band" swallowed the frame and
+ * its half-covered rows rejected the receipt lying in the middle of it. Which
+ * is where receipts are.
+ */
+const MIN_ROW_COVERAGE = 0.6;
+
+/**
+ * How far the bright band may wander from row to row, as a fraction of the frame.
+ *
+ * Measured. A receipt lying square wanders 0.000; held at 11 degrees, 0.032; at
+ * 31 degrees, 0.090. A wooden desk 0.053, a dashboard 0.074, a hand 0.221 - but
+ * a mug sits at 0.097, in among the angled receipts.
+ *
+ * So 0.12, which takes every angle a person holds a phone at and lets a mug
+ * through with them. The alternative refuses a receipt held at a slant, and the
+ * complaint that started this was a phone photographing the DESK it was lying
+ * on - which this rejects with room to spare, along with walls, dashboards,
+ * keyboards and hands.
+ */
+const MAX_PAPER_SPREAD = 0.12;
+
+/**
+ * What fraction of the recent window must look like paper.
+ *
+ * Not all of it. A single-frame test wired straight into the countdown is an
+ * all-or-nothing gate, and an all-or-nothing gate is precisely how this feature
+ * came to never fire at all - a hundred consecutive frames had to agree, and a
+ * hand-held camera never gives you a hundred of anything.
+ */
+const MIN_PAPER_VOTES = 0.6;
+
 export interface StabilityReading {
   /** The picture has stopped changing, by its own camera's standards. */
   steady: boolean;
-  /** There is enough texture in view to be something worth photographing. */
-  hasDetail: boolean;
-  /** Both of the above, and enough frames seen to mean it. */
+  /**
+   * There is something paper-shaped, with print on it, in view.
+   *
+   * One verdict rather than two, and taken over a window rather than from this
+   * frame - which is why the raw `detail`, `paperFill` and `paperSpread` below
+   * can disagree with it. They are what this frame measured; this is what the
+   * last twenty frames voted.
+   */
+  hasSubject: boolean;
+  /**
+   * How solid the bright band is, 0 to 1.
+   *
+   * Near 1 is a sheet of paper. Around 0.5 is speckle - a textured surface
+   * whose bright pixels are scattered across the whole width.
+   */
+  paperFill: number;
+  /** How much that band wanders from row to row. Near 0 is a rectangle. */
+  paperSpread: number;
+  /** All of the above, and enough frames seen to mean it. */
   ready: boolean;
   /** This frame's mean absolute change in brightness, per pixel. */
   diff: number;
@@ -167,7 +229,9 @@ export interface StabilityReading {
 
 const BLIND: StabilityReading = {
   steady: false,
-  hasDetail: false,
+  hasSubject: false,
+  paperFill: 0,
+  paperSpread: 1,
   ready: false,
   diff: 0,
   median: 0,
@@ -176,6 +240,162 @@ const BLIND: StabilityReading = {
   detail: 0,
   motionRatio: 1,
 };
+
+/**
+ * Otsu's threshold: the brightness that best separates the picture into two
+ * groups. A receipt splits cleanly into ink and paper; a uniform surface has no
+ * real split at all, and `valid` says which happened.
+ *
+ * `valid` comes from the between-class variance being positive, NOT from the
+ * threshold's value. A guard on `split === 0` looked equivalent and was not: a
+ * strongly exposed receipt whose ink is genuinely black legitimately splits at
+ * 0, so the best-contrast receipt of all was the one being thrown away.
+ */
+function brightnessSplit(histogram: Uint32Array, count: number): { split: number; valid: boolean } {
+  let sum = 0;
+  for (let v = 0; v < 256; v++) sum += v * histogram[v];
+  let sumBack = 0;
+  let weightBack = 0;
+  let best = 0;
+  let bestVariance = -1;
+  for (let v = 0; v < 256; v++) {
+    weightBack += histogram[v];
+    if (weightBack === 0) continue;
+    const weightFore = count - weightBack;
+    if (weightFore === 0) break;
+    sumBack += v * histogram[v];
+    const meanBack = sumBack / weightBack;
+    const meanFore = (sum - sumBack) / weightFore;
+    const between = weightBack * weightFore * (meanBack - meanFore) * (meanBack - meanFore);
+    if (between > bestVariance) {
+      bestVariance = between;
+      best = v;
+    }
+  }
+  return { split: best, valid: bestVariance > 0 };
+}
+
+/**
+ * Whether the bright part of the picture is shaped like a sheet of paper.
+ *
+ * Two things, measured per row of the downscaled frame, and both are needed:
+ *
+ *   COVERAGE - between its first and last bright pixel, is the row mostly
+ *   bright? Paper is solid. A wooden desk, foliage or a printed dashboard
+ *   scatter bright pixels across the whole width and cover about half of it.
+ *
+ *   CONSISTENCY - do those rows start and end in the same place? A receipt is a
+ *   band of constant width; a hand, a mug or a face is a blob whose width
+ *   changes from row to row.
+ *
+ * Neither alone is enough, and the measurements say so: a desk is consistent
+ * (every row spans the full width) but not covered, and a hand is covered but
+ * not consistent.
+ *
+ * It is still not document recognition. A book, a napkin, a sheet of A4 or a
+ * white van door would all pass, and nothing short of a vision model would tell
+ * them from a receipt. What it does is answer "is something paper-shaped in
+ * view", which is what was being got wrong.
+ */
+function paperShapeOf(luma: Uint8Array, width: number, height: number): { fill: number; spread: number } {
+  const count = width * height;
+  const histogram = new Uint32Array(256);
+  for (let p = 0; p < count; p++) histogram[luma[p]]++;
+  // A frame with no bright/dark boundary at all - a blank wall, a lens flat
+  // against a desk - has nothing to find. Reported as "not paper" rather than
+  // as a perfect sheet, which is what the diagnostics used to say about it.
+  const { split, valid } = brightnessSplit(histogram, count);
+  if (!valid) return { fill: 0, spread: 1 };
+
+  // Per-row spans, with a marker for rows that do not qualify, so the longest
+  // continuous band can be found and then MEASURED - rather than admitted on
+  // continuity and then measured over every stray bright row in the frame,
+  // which let unrelated bands rescue a weak region or spoil a good one.
+  const lefts = new Int32Array(height).fill(-1);
+  const widths = new Int32Array(height);
+  const coverages = new Float64Array(height);
+
+  // Bright pixel positions for the row being examined, reused each row.
+  const positions = new Int32Array(width);
+
+  for (let y = 0; y < height; y++) {
+    const row = y * width;
+    let bright = 0;
+    for (let x = 0; x < width; x++) {
+      if (luma[row + x] > split) positions[bright++] = x;
+    }
+    if (bright === 0) continue;
+
+    // The band's edges come from the tenth and ninetieth percentile of its
+    // bright pixels, not from the first and last.
+    //
+    // A receipt on a workbench was the case that forced this. The wood's bright
+    // ridges reach past the split, so a few of them at each end of every row
+    // stretched the span across the whole frame and halved the coverage - and
+    // the sheet in the middle was rejected. Trimming a tenth from each end
+    // discards that scatter and leaves the solid block.
+    const loIndex = Math.floor((bright - 1) * 0.1);
+    const hiIndex = Math.ceil((bright - 1) * 0.9);
+    const lo = positions[loIndex];
+    const hi = positions[hiIndex];
+    const span = hi - lo + 1;
+    // A row so thin it cannot be part of a sheet, or so sparse that it is
+    // texture rather than paper, tells us nothing either way.
+    if (span < width * 0.1) continue;
+    // The pixels actually retained, counted rather than assumed to be four
+    // fifths. Rounding keeps more than that - ten bright pixels give indices 0
+    // and 9, so all ten - and calling it 0.8 understated every row's coverage,
+    // which is the wrong direction: it rejects marginal receipts.
+    const coverage = (hiIndex - loIndex + 1) / span;
+    if (coverage < MIN_ROW_COVERAGE) continue;
+    lefts[y] = lo;
+    widths[y] = span;
+    coverages[y] = coverage;
+  }
+
+  // The longest continuous band, which is the only part measured.
+  let runStart = 0;
+  let runLength = 0;
+  let bestStart = 0;
+  let bestLength = 0;
+  for (let y = 0; y < height; y++) {
+    if (lefts[y] < 0) {
+      runLength = 0;
+      continue;
+    }
+    if (runLength === 0) runStart = y;
+    runLength++;
+    if (runLength > bestLength) {
+      bestLength = runLength;
+      bestStart = runStart;
+    }
+  }
+
+  // Too little of the frame is a continuous band to call it a sheet.
+  if (bestLength < height * 0.25) return { fill: 0, spread: 1 };
+
+  const bandLefts: number[] = [];
+  const bandWidths: number[] = [];
+  const bandCoverage: number[] = [];
+  for (let y = bestStart; y < bestStart + bestLength; y++) {
+    bandLefts.push(lefts[y]);
+    bandWidths.push(widths[y]);
+    bandCoverage.push(coverages[y]);
+  }
+
+  const fill = median(bandCoverage);
+  // How much the band wanders, as a fraction of the frame. Zero is a perfect
+  // rectangle.
+  const midLeft = median(bandLefts);
+  const midWidth = median(bandWidths);
+  let wander = 0;
+  for (let i = 0; i < bandLefts.length; i++) {
+    wander += Math.abs(bandLefts[i] - midLeft) + Math.abs(bandWidths[i] - midWidth);
+  }
+  const spread = wander / (bandLefts.length * width);
+
+  return { fill, spread };
+}
 
 function median(values: number[]): number {
   if (values.length === 0) return 0;
@@ -191,6 +411,7 @@ export class StabilityDetector {
   private beforePrevious: Uint8Array | null = null;
   private recent: number[] = [];
   private ratios: number[] = [];
+  private subjects: number[] = [];
   private baselineSamples: number[] = [];
   private last: StabilityReading = BLIND;
 
@@ -202,6 +423,7 @@ export class StabilityDetector {
     this.beforePrevious = null;
     this.recent = [];
     this.ratios = [];
+    this.subjects = [];
     this.baselineSamples = [];
     this.last = BLIND;
   }
@@ -254,12 +476,33 @@ export class StabilityDetector {
       variance += d * d;
     }
     const detail = Math.sqrt(variance / count);
-    const hasDetail = detail >= MIN_DETAIL;
+
+    const paper = paperShapeOf(luma, width, height);
+    // This frame's opinion of the subject: enough contrast AND paper-shaped.
+    // The verdict below is taken over a window of them.
+    const subjectNow = detail >= MIN_DETAIL && paper.fill >= MIN_PAPER_FILL && paper.spread <= MAX_PAPER_SPREAD;
+    this.subjects.push(subjectNow ? 1 : 0);
+    if (this.subjects.length > SAMPLE_WINDOW) this.subjects.shift();
+    // A MAJORITY of the recent window, not this frame.
+    //
+    // Every single-frame test in this file is softened this way, and for the
+    // same reason each time: the countdown runs a second and a half, and
+    // anything that resets it on one bad frame never completes. A finger
+    // crossing the edge, a shadow, one frame where the exposure moved the
+    // bright/dark split or the glare washed the contrast out - each is a frame
+    // that says no, and demanding all of them say yes is exactly how this
+    // feature came to never fire at all.
+    const votes = this.subjects.reduce((a, b) => a + b, 0);
+    const hasSubject = this.subjects.length >= SAMPLE_WINDOW && votes >= this.subjects.length * MIN_PAPER_VOTES;
+
 
     const previous = this.previous;
     if (!previous) {
+      // The first frame has no movement to measure, so no verdict - but the
+      // subject vote above has already counted it, which is what lets the
+      // window fill from the very first frame the camera presents.
       this.previous = luma;
-      this.last = { ...BLIND, detail, hasDetail };
+      this.last = { ...BLIND, detail, paperFill: paper.fill, paperSpread: paper.spread };
       return this.last;
     }
 
@@ -333,8 +576,10 @@ export class StabilityDetector {
 
     this.last = {
       steady,
-      hasDetail,
-      ready: steady && hasDetail,
+      hasSubject,
+      paperFill: paper.fill,
+      paperSpread: paper.spread,
+      ready: steady && hasSubject,
       diff,
       median: mid,
       threshold,
