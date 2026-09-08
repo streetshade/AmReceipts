@@ -88,9 +88,12 @@ const config: Config = {
         "f-scrim-soft": "0 0 0 9999px rgba(11,22,20,.4)",
       },
       keyframes: {
+        // Travels the height of whatever it is inside, rather than a fixed
+        // 268px: the viewfinder is no longer a fixed 258x290 box, it fills the
+        // camera, so a pixel distance either stopped short or ran past the end.
         "f-sweep": {
-          "0%": { transform: "translateY(0)" },
-          "100%": { transform: "translateY(268px)" },
+          "0%": { top: "0%" },
+          "100%": { top: "calc(100% - 3rem)" },
         },
         "f-ring": {
           "0%": { transform: "scale(.86)", opacity: ".4" },

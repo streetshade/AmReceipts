@@ -163,7 +163,7 @@ export default function ReviewCaptures({
 
   return (
     <div className="flex min-h-[100dvh] flex-col bg-field-ground font-field text-field-ink">
-      <header className="flex items-center gap-3 border-b border-field-line bg-field-paper px-4 pb-3 pt-[52px]">
+      <header className="flex items-center gap-3 border-b border-field-line bg-field-paper px-4 pb-3 pt-[calc(env(safe-area-inset-top)+14px)]">
         <button
           onClick={onBack}
           aria-label="Back to the camera"

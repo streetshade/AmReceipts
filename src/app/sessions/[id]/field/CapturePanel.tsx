@@ -480,7 +480,7 @@ export default function CapturePanel({
   return (
     <div className="flex min-h-[100dvh] flex-col bg-field-ground font-field text-field-ink">
       {/* Header */}
-      <header className="flex items-center gap-3 border-b border-field-line bg-field-paper px-4 pb-3 pt-[52px]">
+      <header className="flex items-center gap-3 border-b border-field-line bg-field-paper px-4 pb-3 pt-[calc(env(safe-area-inset-top)+14px)]">
         <button
           onClick={onDone}
           aria-label="Back to the job visit"
@@ -517,29 +517,51 @@ export default function CapturePanel({
           {cameraError ? "camera unavailable" : streaming ? "live camera feed" : "starting camera…"}
         </div>
 
-        <div className="relative z-10 flex flex-1 items-center justify-center">
-          <div
-            className={`relative w-[258px] max-h-[290px] h-full rounded-[12px] ${
-              auto ? "border-[5px] border-field-accent shadow-f-scrim" : "shadow-f-scrim"
-            }`}
-          >
-            {auto ? (
-              <div
-                aria-hidden
-                className="absolute inset-x-0 top-0 h-12 animate-f-sweep motion-reduce:animate-none"
-                style={{ background: "linear-gradient(180deg,rgba(34,224,199,0),rgba(34,224,199,.5))" }}
-              />
-            ) : (
-              // Manual: four corner brackets rather than a full frame.
-              <>
-                <span className="absolute left-0 top-0 h-[52px] w-[52px] border-l-[5px] border-t-[5px] border-white" />
-                <span className="absolute right-0 top-0 h-[52px] w-[52px] border-r-[5px] border-t-[5px] border-white" />
-                <span className="absolute bottom-0 left-0 h-[52px] w-[52px] border-b-[5px] border-l-[5px] border-white" />
-                <span className="absolute bottom-0 right-0 h-[52px] w-[52px] border-b-[5px] border-r-[5px] border-white" />
-              </>
-            )}
-          </div>
+        {/*
+          The frame sits at the bounds of the camera, not in a fixed 258x290 box
+          floating inside it.
+
+          The design was authored at a 390px frame, where a fixed box happened
+          to fill most of the width. On a real phone it read as a small window
+          adrift in the picture, telling the user to line a receipt up inside
+          borders that meant nothing.
+
+          It outlines what is VISIBLE, which is not quite the same as what is
+          saved: the feed is drawn `object-cover`, so a stream whose shape does
+          not match this area is cropped on screen, while `shoot()` writes the
+          whole frame. The photograph is therefore a superset of what is framed
+          here - nothing a technician lines up can be lost, which is the
+          direction that matters.
+
+          Absolutely positioned over the whole camera area, so the caption and
+          the feed label float over it rather than squeezing it into a middle
+          row.
+        */}
+        <div
+          aria-hidden
+          className={`pointer-events-none absolute inset-2 rounded-[12px] ${
+            auto ? "overflow-hidden border-[5px] border-field-accent" : ""
+          }`}
+        >
+          {auto ? (
+            <div
+              className="absolute inset-x-0 top-0 h-12 animate-f-sweep motion-reduce:animate-none"
+              style={{ background: "linear-gradient(180deg,rgba(34,224,199,0),rgba(34,224,199,.5))" }}
+            />
+          ) : (
+            // Manual: four corner brackets rather than a full frame.
+            <>
+              <span className="absolute left-0 top-0 h-[52px] w-[52px] border-l-[5px] border-t-[5px] border-white" />
+              <span className="absolute right-0 top-0 h-[52px] w-[52px] border-r-[5px] border-t-[5px] border-white" />
+              <span className="absolute bottom-0 left-0 h-[52px] w-[52px] border-b-[5px] border-l-[5px] border-white" />
+              <span className="absolute bottom-0 right-0 h-[52px] w-[52px] border-b-[5px] border-r-[5px] border-white" />
+            </>
+          )}
         </div>
+
+        {/* Spacer for the row the frame used to occupy, so the caption stays
+            at the bottom of the camera rather than under the feed label. */}
+        <div className="relative z-10 flex-1" />
 
         <div className="relative z-10 flex flex-col items-center gap-2 px-5 pb-4 pt-1.5 text-center">
           {auto && hold !== null && (

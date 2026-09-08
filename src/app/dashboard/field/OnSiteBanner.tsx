@@ -182,13 +182,34 @@ export default function OnSiteBanner({
     };
   }, [locate]);
 
-  const shell = "rounded-[18px] bg-field-ink p-[18px] font-field";
+  /**
+   * The box takes the height it needs, and the job list inside it is capped.
+   *
+   * Four flex-based attempts at "grow into the spare space, shrink to a floor"
+   * are gone, and each failed the same way - by hiding a control:
+   *
+   *   `min-h-0` let the box shrink past its contents, so the list hung out of
+   *   the rounded corners with the camera button drawn over it.
+   *
+   *   `overflow-hidden` to clip that made it worse: a flex item that is a
+   *   scroll container has an automatic minimum size of zero, so it went on
+   *   shrinking and hid the escape button instead.
+   *
+   *   An explicit `min-h-[264px]` was no better, because a stated minimum
+   *   REPLACES the content-based one - at large text sizes the box could still
+   *   be compressed below what was in it.
+   *
+   * Nothing here is compressed at all now. The list has a maximum tied to the
+   * viewport (see `Picker`), so the screen fits on an ordinary phone, and
+   * anything that does not fit scrolls rather than being clipped.
+   */
+  const shell = "flex shrink-0 flex-col rounded-[18px] bg-field-ink p-4 font-field";
 
   if (state.kind === "matched") {
     const job = state.job;
     return (
       <section className={shell} aria-live="polite">
-        <div className="flex items-start gap-3">
+        <div className="flex shrink-0 items-start gap-3">
           <span
             aria-hidden
             className="mt-1 block h-3 w-3 shrink-0 rounded-full bg-field-accent shadow-f-livedot"
@@ -201,7 +222,7 @@ export default function OnSiteBanner({
             </p>
           </div>
         </div>
-        <div className="mt-4 flex gap-3">
+        <div className="mt-4 flex shrink-0 gap-3">
           <button
             onClick={() => onStart(job.id)}
             disabled={busy}
@@ -237,7 +258,7 @@ export default function OnSiteBanner({
   if (state.kind === "choose") {
     return (
       <section className={shell} aria-live="polite">
-        <p className="text-f-19 font-bold text-white">{state.note}</p>
+        <p className="shrink-0 text-f-19 font-bold text-white">{state.note}</p>
         <Picker jobs={state.jobs} busy={busy} onStart={onStart} />
       </section>
     );
@@ -245,17 +266,22 @@ export default function OnSiteBanner({
 
   // idle and unavailable share a shape: a line saying where we stand, a way to
   // try location, and the picker. The technician is never stuck.
-  const note = state.kind === "idle" ? "Let the app fill in the job when you arrive on site." : state.note;
+  //
+  // The idle state carries no second line of explanation. It cost a row of a
+  // screen that has to fit, and "Use my location" directly beneath the question
+  // already says what it does.
   return (
     <section className={shell} aria-live="polite">
-      <p className="text-f-19 font-bold text-white">
+      <p className="shrink-0 text-f-19 font-bold text-white">
         {state.kind === "idle" ? "Which job are you on?" : "Couldn't tell which job you're on"}
       </p>
-      <p className="mt-1 text-f-16 text-field-mutedDark">{note}</p>
+      {state.kind === "unavailable" && (
+        <p className="mt-1 shrink-0 text-f-16 text-field-mutedDark">{state.note}</p>
+      )}
       {state.kind === "idle" && (
         <button
           onClick={locate}
-          className="mt-4 h-14 w-full rounded-[14px] bg-field-accent text-f-18 font-bold text-field-accentText transition hover:bg-field-accentHover"
+          className="mt-3 h-14 w-full shrink-0 rounded-[14px] bg-field-accent text-f-18 font-bold text-field-accentText transition hover:bg-field-accentHover"
         >
           Use my location
         </button>
@@ -279,7 +305,26 @@ function Picker({
 }) {
   const shown = jobs.filter((j) => j.id !== exclude);
   return (
-    <div className="mt-4 space-y-2 border-t border-field-inkLine pt-4">
+    <div className="mt-3 flex flex-col border-t border-field-inkLine pt-3">
+      {/*
+        The list scrolls inside its own box; "start without a job" does not.
+        A list as long as the technician's job history pushed the camera button
+        and the day's figures off the screen, and the one control that always
+        has to be reachable was the one at the very bottom of it.
+      */}
+      {/*
+        The one number that makes Home fit on a phone.
+
+        17svh is roughly two job rows on the device this was measured against,
+        and it is a MAXIMUM rather than a fixed height - a short list takes the
+        room it needs and nothing scrolls at all. `svh` rather than `vh` so the
+        box does not resize as the browser's bars slide away.
+
+        Everything else on this screen has a height of its own, so capping the
+        one open-ended list is all that is needed to keep the camera button and
+        the day's figures above the fold.
+      */}
+      <div className="max-h-[17svh] space-y-2 overflow-y-auto overscroll-contain pr-0.5">
       {shown.length === 0 ? (
         <p className="text-f-16 text-field-mutedDark">No jobs on this account yet.</p>
       ) : (
@@ -305,12 +350,13 @@ function Picker({
           );
         })
       )}
+      </div>
       <button
         onClick={() => onStart(null)}
         disabled={busy}
-        className="min-h-[56px] w-full rounded-[14px] border-[1.5px] border-dashed border-field-dashed px-4 text-f-17 font-semibold text-field-mutedDarkAlt transition hover:border-field-accent hover:text-field-accent disabled:opacity-60"
+        className="mt-2 min-h-[48px] w-full shrink-0 rounded-[14px] border-[1.5px] border-dashed border-field-dashed px-4 text-f-16 font-semibold text-field-mutedDarkAlt transition hover:border-field-accent hover:text-field-accent disabled:opacity-60"
       >
-        Start without a job — sort it out later
+        Start without a job
       </button>
     </div>
   );

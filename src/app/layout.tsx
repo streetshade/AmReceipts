@@ -25,7 +25,10 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
-  maximumScale: 1,
+  // No `maximumScale`. Locking it to 1 stops a phone pinch-zooming at all,
+  // which on a screen read at arm's length in sunlight is exactly the wrong
+  // thing to take away. The layouts are built for the small text anyway, so
+  // there is nothing to protect from being zoomed.
   themeColor: "#0E1A18",
 };
 

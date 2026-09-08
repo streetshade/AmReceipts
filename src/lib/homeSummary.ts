@@ -1,10 +1,9 @@
-// The figures behind the field Home screen.
+// The figures behind the field Home screen, and the cards behind Visits.
 //
-// Kept on the server and in one place because the two stat cards and the visit
-// list have to agree with each other - "This week $646.74 / 5 job visits" is
-// read as one sentence, and a week total drawn from receipts beside a visit
-// count drawn from sessions will disagree the moment someone opens a visit and
-// buys nothing.
+// The two stat cards are drawn from one set of receipts because they are read
+// as one sentence - "This week $646.74 / 5 job visits" - and a week total drawn
+// from receipts beside a visit count drawn from sessions would disagree the
+// moment someone opened a visit and bought nothing.
 
 import { prisma } from "./db";
 import {
@@ -87,14 +86,7 @@ export interface HomeSummary {
    * appears would make the count jump about as photographs are processed.
    */
   week: { totalCents: number; visitCount: number };
-  /** The first few still open, newest first. */
-  openVisits: VisitCard[];
-  /** How many are open in total, so "See all" is honest about the rest. */
-  openVisitCount: number;
 }
-
-/** How many visit cards Home shows before deferring to the Visits screen. */
-export const HOME_VISIT_LIMIT = 3;
 
 /** The half of the day the greeting should reflect. */
 export function greetingFor(hour: number): string {
@@ -229,18 +221,10 @@ export async function loadHomeSummary(user: { id: string; name: string }, now = 
     }
   }
 
-  const openWhere = { userId: user.id, approvalStatus: { not: "approved" } };
-  const [openCount, open] = await Promise.all([
-    prisma.expenseSession.count({ where: openWhere }),
-    prisma.expenseSession.findMany({
-      where: openWhere,
-      orderBy: { updatedAt: "desc" },
-      take: HOME_VISIT_LIMIT,
-      include: VISIT_INCLUDE,
-    }),
-  ]);
-
-  const openVisits = open.map((s) => toVisitCard(s, now, tz));
+  // No list of open visits here any more. Home showed one and it was a second
+  // copy of the Visits tab, one tap away - and it was what pushed the day's
+  // figures below the fold on a real phone, on a screen whose whole job is to
+  // be answered without scrolling.
 
   return {
     weekday: weekdayName(now, tz),
@@ -250,7 +234,5 @@ export async function loadHomeSummary(user: { id: string; name: string }, now = 
     firstName: user.name.trim().split(/\s+/)[0] || user.name,
     today: { totalCents: todayTotal, receiptCount: todayCount },
     week: { totalCents: weekTotal, visitCount: weekSessions.size },
-    openVisits,
-    openVisitCount: openCount,
   };
 }

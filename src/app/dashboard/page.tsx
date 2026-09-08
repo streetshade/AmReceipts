@@ -33,8 +33,10 @@ export default async function DashboardPage() {
 
     // No AppHeader and no max-w-4xl gutter: Home draws its own chrome, and the
     // desktop header on top of it would push the whole screen down a nav bar.
+    // Fixed to the viewport, not `min-h`: Home is one screen and must not be
+    // draggable, or the tab bar walks off the bottom.
     return (
-      <div className="flex min-h-[100dvh] flex-col bg-field-ground">
+      <div className="flex h-[100dvh] flex-col overflow-hidden bg-field-ground">
         <HomeScreen
           summary={summary}
           recentJobs={jobs.map((j) => ({ ...j, label: siteLabel(j) }))}

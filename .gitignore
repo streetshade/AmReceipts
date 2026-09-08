@@ -37,3 +37,7 @@ m3-reference/
 
 # Self-signed dev certificates for testing on a phone (npm run dev:phone).
 certificates/
+
+# Tesseract's language data, downloaded on first use of OCR_PROVIDER=tesseract.
+.cache/
+*.traineddata

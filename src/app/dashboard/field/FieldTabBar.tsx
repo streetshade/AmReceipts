@@ -71,7 +71,7 @@ export default function FieldTabBar({ role = "user" }: { role?: string }) {
   ];
 
   return (
-    <nav className="sticky bottom-0 z-10 mt-auto flex border-t border-field-line bg-field-paper px-2 pb-[26px] pt-2">
+    <nav className="z-10 flex shrink-0 border-t border-field-line bg-field-paper px-2 pb-[calc(env(safe-area-inset-bottom)+10px)] pt-1.5">
       {tabs.map((t) => {
         // Exact match only. `startsWith` would light Home up on every
         // /dashboard/* route, including Visits.
@@ -81,7 +81,7 @@ export default function FieldTabBar({ role = "user" }: { role?: string }) {
             key={t.href}
             href={t.href}
             aria-current={active ? "page" : undefined}
-            className="flex h-14 flex-1 flex-col items-center justify-center gap-1"
+            className="flex h-[52px] flex-1 flex-col items-center justify-center gap-0.5"
           >
             <Glyph kind={t.glyph} active={active} />
             <span className={`text-f-12 font-semibold ${active ? "text-field-teal" : "text-field-muted"}`}>

@@ -217,7 +217,14 @@ class TesseractOcrProvider implements OcrProvider {
   async process(image: Buffer): Promise<ParsedReceipt> {
     // Lazy import so the stub path never loads the heavy WASM bundle.
     const { createWorker } = await import("tesseract.js");
-    const worker = await createWorker("eng");
+    // The 5MB language file is downloaded on first use and cached. Given
+    // nowhere to put it, tesseract.js drops it in the process's working
+    // directory - which for this app is the repository root, where it promptly
+    // got committed by accident. `.cache/tesseract` is deliberate, gitignored,
+    // and survives between runs so the download happens once.
+    const worker = await createWorker("eng", undefined, {
+      cachePath: process.env.TESSERACT_CACHE_PATH || ".cache/tesseract",
+    });
     try {
       const { data } = await worker.recognize(image);
       return parseReceiptText(data.text || "");

@@ -3,19 +3,18 @@
 // Home — start a capture in one tap, and see where the day stands.
 //
 // The order on the screen is the order of the day: which job you're on, then
-// the camera, then what it has added up to, then what is still hanging over
-// you. Nothing above the camera button is a decision the technician has to
-// make before photographing a receipt.
+// the camera, then what it has added up to. Nothing above the camera button is
+// a decision the technician has to make before photographing a receipt, and
+// nothing below the figures at all - this is one screen, and everything else
+// lives behind the tabs.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
 import { formatCents } from "@/lib/money";
 import { flush, listPending, offlineQueueAvailable } from "@/lib/offlineQueue";
 import { isOnline } from "@/lib/online";
 import type { HomeSummary } from "@/lib/homeSummary";
 import OnSiteBanner, { type JobOption } from "./OnSiteBanner";
-import VisitCardLink from "./VisitCardLink";
 
 export default function HomeScreen({
   summary,
@@ -174,8 +173,12 @@ export default function HomeScreen({
   }, [siteJobId, start]);
 
   return (
-    <div className="flex flex-1 flex-col bg-field-ground font-field text-field-ink">
-      <header className="flex items-start justify-between gap-3 border-b border-field-line bg-field-paper px-5 pb-4 pt-[52px]">
+    // A single screen, not a page that scrolls. Everything a technician needs
+    // before photographing a receipt - which job, the camera, what today comes
+    // to - has to be reachable without a thumb-drag, so the layout is a fixed
+    // column and the only thing that scrolls is the list of jobs.
+    <div className="flex min-h-0 flex-1 flex-col bg-field-ground font-field text-field-ink">
+      <header className="flex shrink-0 items-start justify-between gap-3 border-b border-field-line bg-field-paper px-5 pb-3 pt-[calc(env(safe-area-inset-top)+14px)]">
         <div className="min-w-0">
           <p className="text-f-14 font-semibold uppercase tracking-[.08em] text-field-muted">{summary.weekday}</p>
           <h1 className="truncate text-f-25 font-bold">{summary.greeting}, {summary.firstName}</h1>
@@ -188,19 +191,34 @@ export default function HomeScreen({
         )}
       </header>
 
-      <div className="flex flex-col gap-4 px-5 pb-6 pt-4">
+      {/*
+        This container CAN scroll, but on an ordinary phone it never does: the
+        job list is capped so everything down to the day's figures fits. It
+        scrolls on something as short as an SE with the browser bars showing, or
+        at a large text size, and a little scrolling there is much better than
+        clipping a control that always has to be reachable.
+      */}
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-5 pb-4 pt-3">
         <OnSiteBanner recentJobs={recentJobs} busy={busy} onStart={start} onMatch={setSiteJobId} />
 
         {err && (
-          <p role="alert" className="rounded-[14px] border border-field-dangerLine bg-field-dangerFill px-4 py-3 text-f-16 text-field-ink">
+          <p role="alert" className="shrink-0 rounded-[14px] border border-field-dangerLine bg-field-dangerFill px-4 py-3 text-f-16 text-field-ink">
             {err}
           </p>
         )}
 
+        {/*
+          `mt-auto` is how the spare height is spent, rather than by stretching
+          the banner - which grew half-empty on a tall screen - or by an empty
+          spacer, which counts as another flex item and so added a whole gap of
+          its own, enough to push the day's figures below the fold on the very
+          phone this is measured against. An auto margin absorbs the slack and
+          adds nothing.
+        */}
         <button
           onClick={scan}
           disabled={busy}
-          className="flex h-[112px] w-full items-center gap-4 rounded-[20px] bg-field-teal px-5 text-left shadow-f-primary transition hover:bg-field-tealHover disabled:opacity-60"
+          className="mt-auto flex h-[112px] w-full shrink-0 items-center gap-4 rounded-[20px] bg-field-teal px-5 text-left shadow-f-primary transition hover:bg-field-tealHover disabled:opacity-60"
         >
           <span aria-hidden className="flex h-[62px] w-[62px] shrink-0 items-center justify-center rounded-full ring-4 ring-white">
             <span className="block h-[26px] w-[34px] rounded-[4px] border-[3px] border-white" />
@@ -211,7 +229,7 @@ export default function HomeScreen({
           </span>
         </button>
 
-        <div className="flex gap-3">
+        <div className="flex shrink-0 gap-3">
           <StatCard
             label="Today"
             value={formatCents(summary.today.totalCents)}
@@ -224,25 +242,6 @@ export default function HomeScreen({
           />
         </div>
 
-        <section>
-          <div className="flex items-center justify-between">
-            <h2 className="text-f-14 font-semibold uppercase tracking-[.08em] text-field-muted">Still open</h2>
-            {summary.openVisitCount > 0 && (
-              <Link href="/dashboard/visits" className="text-f-16 font-semibold text-field-teal">
-                {summary.openVisitCount > summary.openVisits.length ? `See all ${summary.openVisitCount}` : "See all"}
-              </Link>
-            )}
-          </div>
-          <div className="mt-2 space-y-2">
-            {summary.openVisits.length === 0 ? (
-              <p className="rounded-[16px] border border-field-line bg-field-paper p-4 text-f-17 text-field-muted">
-                Nothing open. Scan a receipt and a visit starts itself.
-              </p>
-            ) : (
-              summary.openVisits.map((v) => <VisitCardLink key={v.id} visit={v} />)
-            )}
-          </div>
-        </section>
       </div>
     </div>
   );
