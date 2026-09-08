@@ -24,6 +24,17 @@ export interface PendingUpload {
   capturedAt: number;
   attempts: number;
   lastError?: string;
+  /**
+   * The server refused this permanently, and it will never be sent.
+   *
+   * The record STAYS, with its photograph dropped, rather than being deleted.
+   * An earlier version removed it and announced the rejection through a
+   * listener on the running flush - which meant that whichever screen happened
+   * to be mounted when the flush ran was the only one ever told. A capture
+   * refused while Home was syncing left its row on the review screen promising
+   * for ever to send a photograph that no longer existed anywhere.
+   */
+  rejected?: boolean;
 }
 
 function openDb(): Promise<IDBDatabase> {
@@ -79,31 +90,48 @@ export async function enqueue(item: Omit<PendingUpload, "attempts">): Promise<En
 
       const write = () => store.put({ ...item, attempts: 0 });
 
-      // Counting the store and adding one assumes this is a NEW key. Re-queuing
-      // an id already present would otherwise evict a receipt to make room for
-      // something that needs none.
-      const existingReq = store.count(item.id);
+      // Re-queuing an id already present replaces it rather than adding one, so
+      // it must not evict a photograph to make room for something that needs
+      // none. Read rather than counted, because whether the record it replaces
+      // is a rejection notice or a real photograph changes the arithmetic.
+      const existingReq = store.get(item.id);
       existingReq.onsuccess = () => {
-        const countReq = store.count();
-        countReq.onsuccess = () => {
-          const replacing = existingReq.result > 0 ? 1 : 0;
-          const overflow = countReq.result + 1 - replacing - MAX_QUEUED;
-          if (overflow <= 0) {
-            write();
+        const existing = existingReq.result as PendingUpload | undefined;
+        const replacing = existing && !existing.rejected ? 1 : 0;
+
+        // One pass for the metadata. The blob is a lazy handle, not bytes, so
+        // walking every record costs nothing worth avoiding - and there is no
+        // index on `rejected` to count them any other way.
+        const waiting: string[] = [];
+        const notices: string[] = [];
+        const cursorReq = store.index("capturedAt").openCursor();
+        cursorReq.onsuccess = () => {
+          const cursor = cursorReq.result;
+          if (cursor) {
+            const row = cursor.value as PendingUpload;
+            if (row.id !== item.id) (row.rejected ? notices : waiting).push(row.id);
+            cursor.continue();
             return;
           }
-          // Oldest first, via the capturedAt index.
-          const cursorReq = store.index("capturedAt").openCursor();
-          cursorReq.onsuccess = () => {
-            const cursor = cursorReq.result;
-            if (cursor && dropped.length < overflow) {
-              dropped.push(String(cursor.value?.id ?? cursor.primaryKey));
-              cursor.delete();
-              cursor.continue();
-            } else {
-              write();
-            }
-          };
+
+          // Rejection notices are trimmed on their own terms and never count
+          // against the photographs. They are a few dozen bytes each with no
+          // image behind them, and letting them fill the queue meant fifty-nine
+          // notices could evict the one real photograph left in it.
+          for (let i = 0; i < notices.length - MAX_REJECTION_NOTICES; i++) {
+            store.delete(notices[i]);
+          }
+
+          // Oldest first, because the newest capture is the one the user is
+          // looking at. Only real photographs are ever counted here, and only
+          // these are reported: dropping one of these is data loss.
+          const overflow = waiting.length + 1 - replacing - MAX_QUEUED;
+          for (let i = 0; i < overflow && i < waiting.length; i++) {
+            dropped.push(waiting[i]);
+            store.delete(waiting[i]);
+          }
+
+          write();
         };
       };
 
@@ -119,7 +147,7 @@ export async function enqueue(item: Omit<PendingUpload, "attempts">): Promise<En
   }
 }
 
-export async function listPending(sessionId?: string): Promise<PendingUpload[]> {
+async function readAll(sessionId?: string): Promise<PendingUpload[]> {
   const db = await openDb();
   const all = await new Promise<PendingUpload[]>((resolve, reject) => {
     const req = db.transaction(STORE, "readonly").objectStore(STORE).getAll();
@@ -129,6 +157,22 @@ export async function listPending(sessionId?: string): Promise<PendingUpload[]> 
   db.close();
   const rows = sessionId ? all.filter((r) => r.sessionId === sessionId) : all;
   return rows.sort((a, b) => a.capturedAt - b.capturedAt);
+}
+
+/** Everything still waiting to be sent. Excludes what the server refused. */
+export async function listPending(sessionId?: string): Promise<PendingUpload[]> {
+  return (await readAll(sessionId)).filter((r) => !r.rejected);
+}
+
+/**
+ * Captures the server refused outright, which nothing will retry.
+ *
+ * Read from the store rather than heard from a listener, so a rejection that
+ * happened on another screen - or before this one was mounted - is still known
+ * about. The photograph itself is gone; this is the notice that it was.
+ */
+export async function listRejected(sessionId?: string): Promise<PendingUpload[]> {
+  return (await readAll(sessionId)).filter((r) => r.rejected);
 }
 
 export async function remove(id: string): Promise<void> {
@@ -153,8 +197,39 @@ async function noteFailure(item: PendingUpload, message: string): Promise<void> 
   db.close();
 }
 
-/** Most a queue may hold before the oldest are dropped, and a warning shown. */
+/**
+ * Keep the record, drop the photograph.
+ *
+ * The blob is what costs storage, and a refused one will never be sent, so it
+ * is replaced with an empty one. What remains is a few dozen bytes saying this
+ * capture was refused - which is the part a screen needs in order not to lie
+ * about it.
+ */
+async function markRejected(item: PendingUpload, message: string): Promise<void> {
+  const db = await openDb();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE, "readwrite");
+      tx.objectStore(STORE).put({ ...item, blob: new Blob([]), rejected: true, lastError: message });
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } finally {
+    db.close();
+  }
+}
+
+/** Most PHOTOGRAPHS a queue may hold before the oldest are dropped, and a warning shown. */
 export const MAX_QUEUED = 60;
+
+/**
+ * Most rejection notices kept alongside them.
+ *
+ * Counted separately, because a notice has no photograph behind it. Sharing one
+ * cap meant a run of refusals could push a real capture out of the queue - a
+ * few dozen bytes evicting several megabytes, and a receipt with it.
+ */
+export const MAX_REJECTION_NOTICES = 20;
 
 export interface FlushResult {
   sent: number;
@@ -195,9 +270,11 @@ const listeners = new Set<(item: PendingUpload, outcome: "sent" | "rejected") =>
 /**
  * Try to send everything queued.
  *
- * A receipt is deleted from the queue only on a response from the server -
- * including a rejection, because a photo the server refuses will be refused
- * again and would otherwise retry for ever. A network failure leaves it queued.
+ * A photograph leaves the queue only on a response from the server. A network
+ * failure leaves it there. A permanent refusal keeps the RECORD - marked, with
+ * the image dropped - because a screen that never saw the flush still has to be
+ * able to say what became of the capture; `listPending` skips those, so nothing
+ * retries them.
  */
 export async function flush(onSent?: (item: PendingUpload, outcome: "sent" | "rejected") => void): Promise<FlushResult> {
   if (!offlineQueueAvailable()) return { sent: 0, remaining: 0, rejected: 0 };
@@ -246,9 +323,10 @@ export async function flush(onSent?: (item: PendingUpload, outcome: "sent" | "re
             progressed = true;
             notify(item, "sent");
           } else if (isPermanentRejection(res.status)) {
-            // Refused for a reason retrying cannot change. Removed, but
-            // reported as rejected rather than sent so it is not silently lost.
-            await remove(item.id);
+            // Refused for a reason retrying cannot change. Marked rather than
+            // removed, so any screen can find out afterwards - see `rejected`
+            // on PendingUpload. The photograph goes; the notice stays.
+            await markRejected(item, `Refused with ${res.status}`);
             rejected++;
             progressed = true;
             notify(item, "rejected");

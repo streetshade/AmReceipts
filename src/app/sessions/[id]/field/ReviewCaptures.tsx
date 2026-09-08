@@ -18,7 +18,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { formatCents } from "@/lib/money";
 import { entryConcerns, summariseBurst, type BurstEntry, type Concern } from "@/lib/receiptQuality";
-import { flush, listPending, offlineQueueAvailable } from "@/lib/offlineQueue";
+import { flush, listPending, listRejected, offlineQueueAvailable } from "@/lib/offlineQueue";
 import { discardCapture, planDiscard } from "@/lib/captureDiscard";
 import { isOnline } from "@/lib/online";
 import type { ReceiptDTO } from "@/lib/dto";
@@ -66,19 +66,22 @@ export default function ReviewCaptures({
    */
   const [queuedIds, setQueuedIds] = useState<Set<string> | null>(null);
   /**
-   * Photographs the server refused outright while this screen was open.
+   * Photographs the server refused outright - a file too large, a visit that no
+   * longer exists. Neither queued nor a receipt, so without this the row would
+   * sit there promising to send something that exists nowhere.
    *
-   * The flush removes a permanently rejected upload from the queue - a file too
-   * large, a session that no longer exists - so it is neither queued nor a
-   * receipt, and nothing else on this screen would ever mention it again. The
-   * row would sit there promising to send a photograph that no longer exists.
+   * Read from the queue, not heard from a listener on the flush this screen
+   * happened to run. A rejection that happened while Home was syncing, or
+   * before this screen was mounted, is just as real.
    */
   const [rejectedIds, setRejectedIds] = useState<Set<string>>(new Set());
   const readQueue = useCallback(async () => {
     if (!offlineQueueAvailable()) return;
     try {
-      const rows = await listPending(sessionId);
-      if (alive.current) setQueuedIds(new Set(rows.map((r) => r.id)));
+      const [waiting, refused] = await Promise.all([listPending(sessionId), listRejected(sessionId)]);
+      if (!alive.current) return;
+      setQueuedIds(new Set(waiting.map((r) => r.id)));
+      setRejectedIds(new Set(refused.map((r) => r.id)));
     } catch {
       // A browser that refuses IndexedDB simply leaves the shots' own status in
       // place, which is what this screen used before.
@@ -124,16 +127,7 @@ export default function ReviewCaptures({
     }
     if (alive.current) setSyncing(true);
     try {
-      if (offlineQueueAvailable()) {
-        // The listener is the only notice a refused photograph ever gets: the
-        // flush deletes it from the queue, so afterwards it is neither queued
-        // nor a receipt and nothing would say what became of it.
-        await flush((item, outcome) => {
-          if (outcome === "rejected" && alive.current) {
-            setRejectedIds((prev) => new Set(prev).add(item.id));
-          }
-        });
-      }
+      if (offlineQueueAvailable()) await flush();
       // A real request to our own server, and the page is refreshed only once
       // it comes back. `navigator.onLine` says nothing about a captive portal
       // or a dead cell, and a refresh in either state blanks the whole app -

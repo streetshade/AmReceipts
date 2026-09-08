@@ -101,7 +101,10 @@ if ! cert_is_usable; then
   mkdir -p "$DIR"
   echo "Making a certificate for $IP …"
   # Written to temporary files and moved into place only once both are good, so
-  # an interrupted run cannot leave a truncated or mismatched pair behind.
+  # an interrupted openssl cannot leave a truncated pair behind. The two moves
+  # are still two operations - a kill between them leaves a new key beside an
+  # old certificate - which is why `cert_is_usable` checks that the key matches
+  # rather than trusting the pair to have arrived together.
   tmpkey="$(mktemp "$DIR/.key.XXXXXX")"
   tmpcrt="$(mktemp "$DIR/.crt.XXXXXX")"
   trap 'rm -f "$tmpkey" "$tmpcrt"' EXIT

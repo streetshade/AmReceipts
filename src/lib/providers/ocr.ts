@@ -217,14 +217,27 @@ class TesseractOcrProvider implements OcrProvider {
   async process(image: Buffer): Promise<ParsedReceipt> {
     // Lazy import so the stub path never loads the heavy WASM bundle.
     const { createWorker } = await import("tesseract.js");
+
     // The 5MB language file is downloaded on first use and cached. Given
     // nowhere to put it, tesseract.js drops it in the process's working
     // directory - which for this app is the repository root, where it promptly
-    // got committed by accident. `.cache/tesseract` is deliberate, gitignored,
-    // and survives between runs so the download happens once.
-    const worker = await createWorker("eng", undefined, {
-      cachePath: process.env.TESSERACT_CACHE_PATH || ".cache/tesseract",
-    });
+    // got committed by accident. This path is deliberate and gitignored.
+    //
+    // The directory has to be CREATED. tesseract.js writes the file with a
+    // plain `writeFile` and swallows the failure, so a missing directory does
+    // not break OCR - it silently disables the cache, and the five megabytes
+    // are fetched again on every worker. That is invisible until someone
+    // wonders why the first read after each restart takes so long.
+    const cachePath = process.env.TESSERACT_CACHE_PATH || ".cache/tesseract";
+    try {
+      const { mkdir } = await import("fs/promises");
+      await mkdir(cachePath, { recursive: true });
+    } catch {
+      // A read-only or unwritable location is not a reason to refuse to read a
+      // receipt; it just means no cache, which is what happens anyway.
+    }
+
+    const worker = await createWorker("eng", undefined, { cachePath });
     try {
       const { data } = await worker.recognize(image);
       return parseReceiptText(data.text || "");
