@@ -7,13 +7,11 @@
 // the shutter stays available for the crumpled, glossy and badly-lit ones.
 //
 // HONEST NOTE ON "AUTO". The design says auto-capture fires "on edge
-// detection". What this implements is STABILITY detection: successive frames
-// are compared and, once the picture stops changing, the countdown starts.
-// That is a genuine signal - it is what stops it firing while the phone is
-// being moved into place - but it is not the same as recognising a document,
-// and it will happily photograph a steady tabletop. Real edge detection needs a
-// vision model or an OpenCV build; this is the honest approximation until then,
-// and the shutter covers what it misses.
+// detection". What this implements is stability plus contrast - see
+// `src/lib/stability.ts`, which explains what that can and cannot tell you, and
+// records how the first version behaved on a real phone: it never fired at all,
+// on anything, because it demanded a hundred consecutive clean frames from a
+// camera held in a hand.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -21,22 +19,35 @@ import { formatCents } from "@/lib/money";
 import { enqueue, flush, listPending, offlineQueueAvailable, isPermanentRejection } from "@/lib/offlineQueue";
 import { discardCapture, planDiscard } from "@/lib/captureDiscard";
 import type { CaptureShot } from "@/lib/capture";
+import { StabilityDetector, type StabilityReading } from "@/lib/stability";
 
 /**
  * 2 -> 1 -> fire, at 550ms: 1.65s nominal.
  *
- * The digit shown is derived from a monotonic DEADLINE rather than counted off
- * interval callbacks, because setInterval drifts under main-thread load and a
- * throttled tab can stretch three ticks well past the 2s the design allows.
+ * The digit shown is derived from a DEADLINE rather than counted off interval
+ * callbacks, because setInterval drifts under main-thread load and a throttled
+ * tab can stretch three ticks well past the 2s the design allows. The clock is
+ * `Date.now()`, which is not monotonic - a step change while a countdown is
+ * running would cut it short or restart it, which costs a photograph nobody
+ * loses anything by retaking.
  */
 const TICK_MS = 550;
 const COUNTDOWN_MS = TICK_MS * 3;
-/** Below this mean per-pixel difference the picture counts as held still. */
-const STILL_THRESHOLD = 6;
 /** How long to wait after a shot before arming again, so one receipt is not shot twice. */
 const REARM_MS = 1400;
 
 type Shot = CaptureShot;
+
+/**
+ * `requestVideoFrameCallback`, where the browser has it.
+ *
+ * Not in the DOM lib this project builds against, and absent on older Safari,
+ * so it is declared here and feature-detected rather than assumed.
+ */
+type FrameCallbackVideo = HTMLVideoElement & {
+  requestVideoFrameCallback?: (cb: () => void) => number;
+  cancelVideoFrameCallback?: (handle: number) => void;
+};
 
 /** A 140px-wide JPEG data URL from an image URL, or a rejection. */
 function thumbnailFrom(url: string): Promise<string> {
@@ -65,6 +76,7 @@ export default function CapturePanel({
   onItems,
   onReview,
   onDiscarded,
+  tuning = false,
   initialShots,
 }: {
   sessionId: string;
@@ -82,6 +94,8 @@ export default function CapturePanel({
   onReview: (shots: CaptureShot[]) => void;
   /** A photograph was thrown away; take it out of the burst the visit holds. */
   onDiscarded?: (captureId: string) => void;
+  /** Show the live auto-capture figures. Set from `?tune=1`. */
+  tuning?: boolean;
   /**
    * The burst already taken, when the camera is re-entered from review.
    *
@@ -110,6 +124,14 @@ export default function CapturePanel({
   // 60x74 tile is too small to hold a confirm button beside a cancel one.
   const [confirming, setConfirming] = useState<string | null>(null);
   /**
+   * The live figures behind auto-capture, when `?tune=1` is on the URL.
+   *
+   * Not shipped chrome - it is how the thresholds get set from what a real
+   * camera in a real hand actually produces, rather than from a guess made at a
+   * desk. The guess was wrong, and this is how the next one gets checked.
+   */
+  const [reading, setReading] = useState<StabilityReading | null>(null);
+  /**
    * Captures thrown away while their upload was still in flight.
    *
    * The fetch cannot be called back, so it will create a receipt a moment after
@@ -124,7 +146,7 @@ export default function CapturePanel({
 
   // Kept in refs, not state: the analysis loop runs every frame and must not
   // re-render the component or capture a stale closure.
-  const lastFrame = useRef<ImageData | null>(null);
+  const detector = useRef(new StabilityDetector());
   const stillSince = useRef<number | null>(null);
   const armedAt = useRef<number>(0);
   const busy = useRef(false);
@@ -336,8 +358,11 @@ export default function CapturePanel({
     deadline.current = null;
     // Cleared here, not just in the watcher: otherwise the phone is still
     // "held still" the instant the shot completes and the next countdown
-    // starts immediately, photographing the same receipt again.
+    // starts immediately, photographing the same receipt again. The detector is
+    // reset for the same reason - its window is full of the stillness that just
+    // fired.
     stillSince.current = null;
+    detector.current.reset();
 
     const canvas = document.createElement("canvas");
     canvas.width = video.videoWidth;
@@ -416,44 +441,83 @@ export default function CapturePanel({
     if (!auto || !streaming) {
       setHold(null);
       stillSince.current = null;
+      detector.current.reset();
       return;
     }
-    let raf = 0;
     const canvas = canvasRef.current ?? document.createElement("canvas");
     canvas.width = 64;
     canvas.height = 48;
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
 
-    const tick = () => {
-      raf = requestAnimationFrame(tick);
+    const sample = () => {
       const video = videoRef.current;
       if (!ctx || !video || video.videoWidth === 0 || busy.current) return;
       if (Date.now() - armedAt.current < REARM_MS) return;
 
       // Downscaled to 64x48 on purpose: comparing full frames every tick would
-      // cost more than the signal is worth, and stability survives the scaling.
+      // cost more than the signal is worth, and both stillness and contrast
+      // survive the scaling.
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
       const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const prev = lastFrame.current;
-      lastFrame.current = frame;
-      if (!prev) return;
+      const reading = detector.current.push(frame.data, canvas.width, canvas.height);
+      if (tuning) setReading(reading);
 
-      let diff = 0;
-      for (let i = 0; i < frame.data.length; i += 4) {
-        diff += Math.abs(frame.data[i] - prev.data[i]);
-      }
-      const mean = diff / (frame.data.length / 4);
-
-      if (mean < STILL_THRESHOLD) {
+      if (reading.ready) {
         if (stillSince.current === null) stillSince.current = Date.now();
       } else {
         stillSince.current = null;
         setHold(null);
       }
     };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [auto, streaming]);
+
+    // Driven by the CAMERA, not by the display.
+    //
+    // A 30fps camera on a 60Hz screen hands the same decoded frame to every
+    // other animation frame. Sampling on the display's clock recorded those
+    // duplicates as zero change, which dragged the noise floor to nothing and
+    // set a bar no real camera could clear - the same never-fires failure this
+    // was rewritten to cure, arriving by a different route. The detector
+    // refuses a repeated frame as well, but not asking for one is better than
+    // discarding it.
+    let stop = false;
+    let handle = 0;
+    const video = videoRef.current as FrameCallbackVideo | null;
+    const perFrame = typeof video?.requestVideoFrameCallback === "function";
+
+    if (perFrame && video) {
+      const onFrame = () => {
+        if (stop) return;
+        // Rescheduled BEFORE sampling. Scheduling after meant one thrown
+        // exception - a canvas that will not read during a camera transition -
+        // stopped the loop for good, and auto-capture went quiet with nothing
+        // on screen to say why.
+        handle = video.requestVideoFrameCallback!(onFrame);
+        sample();
+      };
+      handle = video.requestVideoFrameCallback!(onFrame);
+    } else {
+      // Older Safari. Guarded on the media clock, because the display's clock
+      // is not the camera's: without this the same decoded frame is measured
+      // twice on a 30fps camera at 60Hz, and near-duplicates that are not quite
+      // byte-identical would drag the noise floor towards zero.
+      let lastMediaTime = -1;
+      const tick = () => {
+        if (stop) return;
+        handle = requestAnimationFrame(tick);
+        const v = videoRef.current;
+        if (!v || v.currentTime === lastMediaTime) return;
+        lastMediaTime = v.currentTime;
+        sample();
+      };
+      handle = requestAnimationFrame(tick);
+    }
+
+    return () => {
+      stop = true;
+      if (perFrame && video) video.cancelVideoFrameCallback?.(handle);
+      else cancelAnimationFrame(handle);
+    };
+  }, [auto, streaming, tuning]);
 
   // --- countdown ---------------------------------------------------------
   useEffect(() => {
@@ -613,8 +677,17 @@ export default function CapturePanel({
         <video ref={videoRef} playsInline muted className="absolute inset-0 h-full w-full object-cover" />
         <canvas ref={canvasRef} className="hidden" />
 
-        <div className="relative z-10 px-0 pb-1 pt-4 text-center font-mono text-f-14 text-field-mutedDark">
+        <div className="relative z-10 px-3 pb-1 pt-4 text-center font-mono text-f-14 text-field-mutedDark">
           {cameraError ? "camera unavailable" : streaming ? "live camera feed" : "starting camera…"}
+          {tuning && reading && (
+            <span className="mt-1 block text-f-12 leading-snug">
+              move {reading.median.toFixed(1)} / limit {reading.threshold.toFixed(1)} (base{" "}
+              {reading.baseline.toFixed(1)}, x{reading.motionRatio.toFixed(2)}){" "}
+              {reading.steady ? "STILL" : "moving"}
+              {" · "}
+              contrast {reading.detail.toFixed(0)} {reading.hasDetail ? "ok" : "TOO FLAT"}
+            </span>
+          )}
         </div>
 
         {/*

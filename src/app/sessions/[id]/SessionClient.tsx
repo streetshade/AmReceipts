@@ -21,11 +21,14 @@ export default function SessionClient({
   initial,
   uiVersion = "field",
   startCapturing = false,
+  tuning = false,
 }: {
   initial: SessionDTO;
   uiVersion?: UiVersion;
   /** Arrived from Home's `Log here` / `Scan a receipt`; open the camera at once. */
   startCapturing?: boolean;
+  /** Show the live auto-capture figures on the camera. Set from `?tune=1`. */
+  tuning?: boolean;
 }) {
   const router = useRouter();
   const s = initial; // server component is the source of truth; refresh() re-fetches.
@@ -149,6 +152,7 @@ export default function SessionClient({
           sessionId={s.id}
           jobLabel={jobLabel}
           initialShots={burstDraft.current ?? undefined}
+          tuning={tuning}
           onDone={closeStack}
           onItems={() => {
             setCapturing(false);

@@ -17,6 +17,7 @@
     "check:tax": "tsx scripts/tax-check.ts",
     "check:home": "tsx scripts/home-check.ts",
     "check:review": "tsx scripts/review-check.ts",
+    "check:stability": "tsx scripts/stability-check.ts",
     "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed.ts",
     "db:reset": "prisma db push --force-reset && npm run db:seed",

@@ -13,7 +13,7 @@ export default async function SessionPage({
   searchParams,
 }: {
   params: { id: string };
-  searchParams: { capture?: string };
+  searchParams: { capture?: string; tune?: string };
 }) {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
@@ -33,6 +33,9 @@ export default async function SessionPage({
           // Home opens the camera directly: `Log here` should be one tap to a
           // viewfinder, not one tap to a screen with a button on it.
           startCapturing={searchParams.capture === "1"}
+          // `?tune=1` shows the live auto-capture figures on the camera, which
+          // is how its thresholds get set from a real phone rather than guessed.
+          tuning={searchParams.tune === "1"}
         />
       </main>
     </>
