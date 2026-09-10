@@ -121,14 +121,21 @@ const MAX_THRESHOLD = 24;
  * apart gives 10.7. A bare surface gives 3.5 at ordinary sensor noise, 8.5 in a
  * dim room, and 11.6 in near-darkness.
  *
- * 9 admits the faded receipt and refuses the bare surface up to a dim room. In
+ * Lowered from 9 once the ink measurement above existed to do this job
+ * properly. Standard deviation confounds contrast with density - it is roughly
+ * contrast times the square root of p(1-p) - so a receipt that is BOTH faded
+ * and sparsely printed scored 8.4 and was refused, while each fault on its own
+ * passed. That interaction is invisible if the two are only ever tested
+ * separately.
+ *
+ * What is left is a floor against a frame with nothing in it at all. In
  * near-darkness a blank wall would pass it - and that is the direction to be
  * wrong in, because a stray photograph is one tap to delete and a receipt that
  * will not photograph is the failure that was actually reported. This gate
  * exists to stop the phone shooting the dashboard it is sitting on, not to
  * judge whether something is a receipt.
  */
-const MIN_DETAIL = 9;
+const MIN_DETAIL = 5;
 
 /**
  * How solid the bright band has to be before it counts as a document.
@@ -140,6 +147,8 @@ const MIN_DETAIL = 9;
  */
 const MIN_PAPER_FILL = 0.66;
 
+
+
 /**
  * How solid a single row must be to count as part of the sheet.
  *
@@ -150,6 +159,45 @@ const MIN_PAPER_FILL = 0.66;
  * is where receipts are.
  */
 const MIN_ROW_COVERAGE = 0.6;
+
+/**
+ * How much of the sheet must be ink, and how dark that ink must be against it.
+ *
+ * This is the measurement the field asked for. Five false captures in an
+ * ordinary room - a monitor, a laptop screen, a keyboard on a desk, a laptop on
+ * the ground, a couch - and what they have in common is that nothing is written
+ * on them. Everything before this measured the SHAPE of a bright region, and a
+ * room is full of bright rectangles.
+ *
+ * Measured inside the band and against the band's own brightness, which matters
+ * twice. An earlier attempt used the median row coverage as a stand-in and was
+ * wrong in two ways that would have refused real receipts: a receipt with
+ * ordinary line spacing has more blank rows than printed ones, so the median
+ * row is solid paper and the figure reads as blank; and a faded receipt on a
+ * dark background splits globally into "background" and "receipt", putting ink
+ * and paper together on the bright side. Both were reproduced before this
+ * replaced it.
+ *
+ * The two bars do different work, and the measurements say which:
+ *
+ *   CONTRAST stops a uniform surface. Split the pixels of a blank screen and
+ *   the halves differ by 5 to 10 levels of noise; ink and paper differ by 170,
+ *   and by 30 even on a receipt faded to the edge of legibility.
+ *
+ *   AMOUNT stops a two-tone object. Print covers a MINORITY of a receipt - 1%
+ *   to 25% across every fixture here. A monitor, a laptop, a keyboard and a mug
+ *   all split about half and half, and so does a couch, which is the one thing
+ *   in the reported list that contrast alone could not refuse.
+ *
+ * The lower bound is deliberately tiny. It is not what rejects a blank surface
+ * - contrast does that, and does it better - it is only there so a band with
+ * literally nothing in it does not qualify. Set any higher, it refuses a small
+ * receipt on a pale desk, where the band spreads into the surroundings and
+ * dilutes the print to one percent.
+ */
+const MIN_INK = 0.005;
+const MAX_INK = 0.33;
+const MIN_INK_CONTRAST = 20;
 
 /**
  * How far the bright band may wander from row to row, as a fraction of the frame.
@@ -197,6 +245,30 @@ export interface StabilityReading {
   paperFill: number;
   /** How much that band wanders from row to row. Near 0 is a rectangle. */
   paperSpread: number;
+  /**
+   * What fraction of the sheet falls in the SMALLER of its two brightness
+   * populations, after the lighting has been flattened out.
+   *
+   * Print is a minority of a receipt, so this is usually the print - but it is
+   * a minority-population figure, not a measurement of ink, and it can pick up
+   * a lighting or boundary artefact instead.
+   */
+  ink: number;
+  /** How far ink and paper are apart in brightness. Noise on a blank surface is a few levels. */
+  inkContrast: number;
+  /**
+   * Fine structure: how much the picture differs from a blurred copy of itself.
+   *
+   * MEASURED AND REPORTED, NOT GATED ON. It is here because the couch that
+   * fired in the field was not separable by anything else at the time - it
+   * scores 3.8 against a receipt's 24.7 - but the same figure puts a faded
+   * receipt at 6.0, below a monitor's 8.2, and a keyboard at 24.7, level with a
+   * receipt. So on its own it is useless, and as a ratio against contrast it
+   * looks promising on synthetic scenes and would be a fifth way to refuse a
+   * real receipt if it is wrong. It is reported by `?tune=1` so the decision
+   * can be made from receipts rather than from fixtures.
+   */
+  print: number;
   /** All of the above, and enough frames seen to mean it. */
   ready: boolean;
   /** This frame's mean absolute change in brightness, per pixel. */
@@ -232,6 +304,9 @@ const BLIND: StabilityReading = {
   hasSubject: false,
   paperFill: 0,
   paperSpread: 1,
+  ink: 0,
+  inkContrast: 0,
+  print: 0,
   ready: false,
   diff: 0,
   median: 0,
@@ -297,7 +372,11 @@ function brightnessSplit(histogram: Uint32Array, count: number): { split: number
  * them from a receipt. What it does is answer "is something paper-shaped in
  * view", which is what was being got wrong.
  */
-function paperShapeOf(luma: Uint8Array, width: number, height: number): { fill: number; spread: number } {
+function paperShapeOf(
+  luma: Uint8Array,
+  width: number,
+  height: number,
+): { fill: number; spread: number; ink: number; inkContrast: number } {
   const count = width * height;
   const histogram = new Uint32Array(256);
   for (let p = 0; p < count; p++) histogram[luma[p]]++;
@@ -305,7 +384,7 @@ function paperShapeOf(luma: Uint8Array, width: number, height: number): { fill: 
   // against a desk - has nothing to find. Reported as "not paper" rather than
   // as a perfect sheet, which is what the diagnostics used to say about it.
   const { split, valid } = brightnessSplit(histogram, count);
-  if (!valid) return { fill: 0, spread: 1 };
+  if (!valid) return BLANK_SHAPE;
 
   // Per-row spans, with a marker for rows that do not qualify, so the longest
   // continuous band can be found and then MEASURED - rather than admitted on
@@ -372,7 +451,7 @@ function paperShapeOf(luma: Uint8Array, width: number, height: number): { fill: 
   }
 
   // Too little of the frame is a continuous band to call it a sheet.
-  if (bestLength < height * 0.25) return { fill: 0, spread: 1 };
+  if (bestLength < height * 0.25) return BLANK_SHAPE;
 
   const bandLefts: number[] = [];
   const bandWidths: number[] = [];
@@ -394,7 +473,111 @@ function paperShapeOf(luma: Uint8Array, width: number, height: number): { fill: 
   }
   const spread = wander / (bandLefts.length * width);
 
-  return { fill, spread };
+  // Now the question the shape cannot answer: is anything WRITTEN on it.
+  //
+  // Measured on a FLAT-FIELDED copy of the band: each pixel minus a local
+  // average of its neighbours. That subtracts whatever varies slowly across the
+  // sheet, which is mostly the lighting, and leaves what varies quickly, which
+  // is mostly the print. It is not a refinement - without it the
+  // split follows the light rather than the print. A hand's shadow across half
+  // a receipt, a desk lamp from one side, glare on one edge: each puts half the
+  // sheet in one class and half in the other, so a plainly printed receipt
+  // reads as a two-tone object and is refused. All three were reproduced.
+  //
+  // The window is wide compared to a stroke of text and narrow compared to a
+  // shadow, which is what lets it tell them apart.
+  const RADIUS = 4;
+  const flat: number[] = [];
+  for (let y = bestStart; y < bestStart + bestLength; y++) {
+    const from = lefts[y];
+    const to = from + widths[y] - 1;
+    const row = y * width;
+    for (let x = from; x <= to; x++) {
+      let acc = 0;
+      let n = 0;
+      for (let dy = -RADIUS; dy <= RADIUS; dy++) {
+        const yy = y + dy;
+        if (yy < bestStart || yy >= bestStart + bestLength) continue;
+        // Bounded by the NEIGHBOURING row's own span, not this row's.
+        //
+        // On a slanted sheet those are different, and using this row's reached
+        // outside the paper into whatever was behind it. Dark background pulled
+        // the local average down and left bright residuals on blank paper,
+        // which the minority test then read as print - a completely blank sheet
+        // held at 11 degrees fired.
+        const nFrom = lefts[yy];
+        if (nFrom < 0) continue;
+        const nTo = nFrom + widths[yy] - 1;
+        const nRow = yy * width;
+        for (let dx = -RADIUS; dx <= RADIUS; dx++) {
+          const xx = x + dx;
+          if (xx < nFrom || xx > nTo) continue;
+          acc += luma[nRow + xx];
+          n++;
+        }
+      }
+      if (n === 0) continue;
+      // Centred on 128 so the histogram below can be built as usual.
+      flat.push(Math.max(0, Math.min(255, 128 + luma[row + x] - acc / n)));
+    }
+  }
+
+  const bandHistogram = new Uint32Array(256);
+  for (const v of flat) bandHistogram[Math.round(v)]++;
+  const bandCount = flat.length;
+  const inner = brightnessSplit(bandHistogram, bandCount);
+  if (!inner.valid || bandCount === 0) return { fill, spread, ink: 0, inkContrast: 0 };
+
+  let darkCount = 0;
+  let darkTotal = 0;
+  let lightCount = 0;
+  let lightTotal = 0;
+  for (let v = 0; v < 256; v++) {
+    const bin = bandHistogram[v];
+    if (bin === 0) continue;
+    if (v <= inner.split) {
+      darkCount += bin;
+      darkTotal += v * bin;
+    } else {
+      lightCount += bin;
+      lightTotal += v * bin;
+    }
+  }
+  // The MINORITY population, whichever side of the split it landed on.
+  //
+  // Polarity is not knowable in advance. Glare blowing one edge to white flips
+  // it - the flat-fielded "dark" class became 92% of a plainly printed receipt
+  // and it was refused. White text on a dark ticket would do the same. What is
+  // true either way is that the marks are the minority and the stock is the
+  // majority.
+  const darkFraction = darkCount / bandCount;
+  const ink = Math.min(darkFraction, 1 - darkFraction);
+  const inkContrast =
+    darkCount > 0 && lightCount > 0 ? lightTotal / lightCount - darkTotal / darkCount : 0;
+
+  return { fill, spread, ink, inkContrast };
+}
+
+/** Nothing here looks like a sheet of anything. */
+const BLANK_SHAPE = { fill: 0, spread: 1, ink: 0, inkContrast: 0 };
+
+/** How much the picture differs from a blurred copy of itself. See `print`. */
+function printEnergyOf(luma: Uint8Array, width: number, height: number): number {
+  if (width < 3 || height < 3) return 0;
+  let sum = 0;
+  let n = 0;
+  for (let y = 1; y < height - 1; y++) {
+    for (let x = 1; x < width - 1; x++) {
+      let acc = 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        const row = (y + dy) * width + x;
+        acc += luma[row - 1] + luma[row] + luma[row + 1];
+      }
+      sum += Math.abs(luma[y * width + x] - acc / 9);
+      n++;
+    }
+  }
+  return n > 0 ? sum / n : 0;
 }
 
 function median(values: number[]): number {
@@ -478,9 +661,16 @@ export class StabilityDetector {
     const detail = Math.sqrt(variance / count);
 
     const paper = paperShapeOf(luma, width, height);
+    const print = printEnergyOf(luma, width, height);
     // This frame's opinion of the subject: enough contrast AND paper-shaped.
     // The verdict below is taken over a window of them.
-    const subjectNow = detail >= MIN_DETAIL && paper.fill >= MIN_PAPER_FILL && paper.spread <= MAX_PAPER_SPREAD;
+    const subjectNow =
+      detail >= MIN_DETAIL &&
+      paper.fill >= MIN_PAPER_FILL &&
+      paper.spread <= MAX_PAPER_SPREAD &&
+      paper.inkContrast >= MIN_INK_CONTRAST &&
+      paper.ink >= MIN_INK &&
+      paper.ink <= MAX_INK;
     this.subjects.push(subjectNow ? 1 : 0);
     if (this.subjects.length > SAMPLE_WINDOW) this.subjects.shift();
     // A MAJORITY of the recent window, not this frame.
@@ -502,7 +692,7 @@ export class StabilityDetector {
       // subject vote above has already counted it, which is what lets the
       // window fill from the very first frame the camera presents.
       this.previous = luma;
-      this.last = { ...BLIND, detail, paperFill: paper.fill, paperSpread: paper.spread };
+      this.last = { ...BLIND, detail, paperFill: paper.fill, paperSpread: paper.spread, ink: paper.ink, inkContrast: paper.inkContrast, print };
       return this.last;
     }
 
@@ -579,6 +769,9 @@ export class StabilityDetector {
       hasSubject,
       paperFill: paper.fill,
       paperSpread: paper.spread,
+      ink: paper.ink,
+      inkContrast: paper.inkContrast,
+      print,
       ready: steady && hasSubject,
       diff,
       median: mid,

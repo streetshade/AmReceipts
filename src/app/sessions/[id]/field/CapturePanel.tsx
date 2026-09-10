@@ -687,7 +687,9 @@ export default function CapturePanel({
               {reading.steady ? "STILL" : "moving"}
               {" · "}
               contrast {reading.detail.toFixed(0)} · paper {reading.paperFill.toFixed(2)}/
-              {reading.paperSpread.toFixed(2)} · {reading.hasSubject ? "SUBJECT" : "no subject"}
+              {reading.paperSpread.toFixed(2)} · ink {reading.ink.toFixed(2)}/
+              {reading.inkContrast.toFixed(0)} ·{" "}
+              {reading.hasSubject ? "SUBJECT" : "no subject"}
             </span>
           )}
         </div>

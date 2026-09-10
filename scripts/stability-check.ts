@@ -324,13 +324,143 @@ for (const [name, r] of refuses) {
   check(`${name} does not`, !r.ready, `fill ${r.paperFill.toFixed(2)} wander ${r.paperSpread.toFixed(3)}`);
 }
 
-// Stated rather than left to be discovered: a bright solid object of roughly
-// constant width passes. A mug measures 0.097 against an angled receipt's
-// 0.090, and no line separates them. Refusing a receipt held at a slant is the
-// worse mistake, and a stray photograph is one tap to delete.
+// A mug used to be let through knowingly, on the grounds that its outline is as
+// rectangular as an angled receipt's. It is refused now, and for the right
+// reason rather than by luck: nothing is printed on it.
 {
   const mug = scene((x, y, n) => ((x - 32) ** 2 / 200 + (y - 26) ** 2 / 260 < 1 ? 215 : 110 + Math.sin(x * 0.8) * 30) + (n() - 0.5) * 20, 103);
-  check("a mug is knowingly allowed through", mug.ready, `wander ${mug.paperSpread.toFixed(3)}`);
+  check("a mug does not fire", !mug.ready, `fill ${mug.paperFill.toFixed(2)} wander ${mug.paperSpread.toFixed(3)}`);
+}
+
+// ------------------------------------------------- what actually fired
+
+// Five false captures reported from a real room, and the measurement that was
+// missing. Four of the five have a fill of exactly 1.00: what had been built
+// was a test for "a bright solid rectangle", and a room is full of those. Paper
+// is distinguished by having something PRINTED on it, which breaks the bright
+// field up. A receipt scores 0.69 to 0.79.
+const room: [string, StabilityReading][] = [
+  ["a monitor", scene((x, y, n) => (x > 8 && x < 56 && y > 8 && y < 40 ? 215 : 45) + (n() - 0.5) * 10, 120)],
+  ["a laptop screen", scene((x, y, n) => (x > 10 && x < 54 && y > 4 && y < 30 ? 205 : 60) + (n() - 0.5) * 12, 121)],
+  ["a keyboard on a desk", scene((x, y, n) => (y > 14 && y < 36 ? (x % 5 < 4 && y % 6 < 5 ? 55 : 185) : 195) + (n() - 0.5) * 14, 122)],
+  ["a laptop on the ground", scene((x, y, n) => (x > 14 && x < 50 && y > 12 && y < 38 ? 200 : 55) + (n() - 0.5) * 14, 123)],
+  ["a pale empty desk", scene((x, _y, n) => 190 + Math.sin(x * 0.15) * 8 + (n() - 0.5) * 12, 124)],
+];
+for (const [name, r] of room) {
+  check(`${name} does not fire`, !r.ready, `fill ${r.paperFill.toFixed(2)} print ${r.print.toFixed(1)}`);
+}
+
+// The fifth, and the one that shape alone could never refuse: a couch has a
+// perfectly receipt-like outline. What it does not have is print. Its two
+// brightness populations are 39% and 61% of the sheet - a two-tone object -
+// where ink covers between 4% and 25% of every receipt here.
+{
+  const couch = scene((x, y, n) => 130 + Math.sin(x * 0.18 + y * 0.1) * 38 + Math.sin(y * 0.24) * 22 + (n() - 0.5) * 16, 125);
+  check("a couch does not fire", !couch.ready,
+    `ink ${couch.ink.toFixed(3)} inkContrast ${couch.inkContrast.toFixed(0)} fill ${couch.paperFill.toFixed(2)}`);
+}
+
+// ------------------------------------------------- is anything written on it
+
+// Two receipts that a previous attempt at this refused, both found by review
+// rather than by me, and both reproduced before the fix. They are the reason
+// ink is measured over the band's AREA and against the band's OWN brightness,
+// rather than by how solid a typical row is.
+{
+  // Ordinary line spacing. Most rows of a real receipt are blank paper between
+  // lines of text, so the median row is solid and the sheet reads as blank.
+  const spaced = scene((x, y, n) => (x > 12 && x < 52 && y > 6 && y < 42 ? (x % 7 < 2 && y % 5 < 2 ? 60 : 230) : 40) + (n() - 0.5) * 12, 130);
+  check("a receipt with ordinary line spacing fires", spaced.ready,
+    `ink ${spaced.ink.toFixed(3)} fill ${spaced.paperFill.toFixed(2)}`);
+
+  const verySparse = scene((x, y, n) => (x > 12 && x < 52 && y > 6 && y < 42 ? (x % 7 < 2 && y % 12 < 2 ? 60 : 230) : 40) + (n() - 0.5) * 12, 131);
+  check("a receipt with very little on it fires", verySparse.ready, `ink ${verySparse.ink.toFixed(3)}`);
+
+  // Faded ink on a dark background. Split globally, background goes one way and
+  // the whole receipt - ink and paper together - goes the other, so the sheet
+  // reads as blank. Split within the band, the ink is still there.
+  const fadedOnDark = scene((x, y, n) => (x > 12 && x < 52 && y > 6 && y < 42 ? (x % 7 < 2 && y % 5 !== 4 ? 200 : 230) : 40) + (n() - 0.5) * 12, 132);
+  check("a faded receipt on a dark background fires", fadedOnDark.ready,
+    `ink ${fadedOnDark.ink.toFixed(3)} inkContrast ${fadedOnDark.inkContrast.toFixed(0)}`);
+}
+
+// Lighting. Every one of these is the SAME printed receipt under a different
+// lamp, and each was refused before the band was flat-fielded - the split
+// followed the light instead of the ink, so half the sheet landed in each class
+// and a plainly printed receipt read as a two-tone object.
+{
+  const faded = (x: number, y: number) => (x > 12 && x < 52 && y > 6 && y < 42 ? (x % 7 < 2 && y % 8 < 2 ? 200 : 230) : 40);
+  const even = scene((x, y, n) => faded(x, y) + (n() - 0.5) * 10, 140);
+  check("a faded receipt under even light fires", even.ready, `ink ${even.ink.toFixed(3)}/${even.inkContrast.toFixed(0)}`);
+
+  const shadowed = scene((x, y, n) => faded(x, y) - (x < 32 ? 20 : 0) + (n() - 0.5) * 10, 141);
+  check("  with half of it in shadow, still fires", shadowed.ready, `ink ${shadowed.ink.toFixed(3)}`);
+
+  const graded = scene((x, y, n) => faded(x, y) - (x / W) * 40 + (n() - 0.5) * 10, 142);
+  check("  under a lamp from one side, still fires", graded.ready, `ink ${graded.ink.toFixed(3)}`);
+
+  // A known limit, asserted rather than left to be found. A strip of glare
+  // running the full height BESIDE the sheet is refused - not by the ink test,
+  // which handles it, but by the shape test, because a bright mass of a
+  // different height next to the paper is not a consistent rectangle. Loosening
+  // that is what lets hands and blobs back in.
+  const glared = scene((x, y, n) => (x > 40 ? 255 : faded(x, y)) + (n() - 0.5) * 10, 143);
+  check("  but a full-height band of glare beside it is refused, knowingly", !glared.ready,
+    `ink ${glared.ink.toFixed(3)}/${glared.inkContrast.toFixed(0)} wander ${glared.paperSpread.toFixed(3)}`);
+}
+
+// A BLANK sheet held at an angle must not read as printed. The flat-field pass
+// sampled each row's neighbours using that row's own span, and on a slanted
+// sheet the neighbouring rows sit elsewhere - so it reached off the paper into
+// the background, and the residuals that left on blank paper were counted as
+// print. A blank sheet at 11 degrees fired.
+{
+  const sheet = (printed: boolean, skew: number, seed: number) =>
+    scene((x, y, n) => {
+      const sx = Math.round(x - (y - 24) * skew);
+      const on = sx > 12 && sx < 52 && y > 5 && y < 43;
+      return (on ? (printed && sx % 7 < 2 && y % 5 !== 4 ? 60 : 230) : 40) + (n() - 0.5) * 10;
+    }, seed);
+  for (const skew of [0, 0.2, 0.36]) {
+    const blank = sheet(false, skew, 150 + skew * 100);
+    check(`a blank sheet at skew ${skew} is not read as printed`, !blank.ready,
+      `ink ${blank.ink.toFixed(3)}/${blank.inkContrast.toFixed(0)}`);
+    const printed = sheet(true, skew, 160 + skew * 100);
+    check(`  and a printed one at skew ${skew} still fires`, printed.ready,
+      `ink ${printed.ink.toFixed(3)}/${printed.inkContrast.toFixed(0)}`);
+  }
+}
+
+// Framing. A small receipt on a PALE desk lets the band spread into the
+// surroundings and dilutes the print to one percent, which is why the lower
+// bound on ink is tiny and contrast is what refuses a blank surface.
+{
+  const small = (x: number, y: number, bg: number) => (x > 22 && x < 42 && y > 14 && y < 34 ? (x % 7 < 2 && y % 8 < 2 ? 60 : 230) : bg);
+  const onDark = scene((x, y, n) => small(x, y, 40) + (n() - 0.5) * 10, 144);
+  check("a small receipt on a dark surface fires", onDark.ready, `ink ${onDark.ink.toFixed(3)}`);
+  const onPale = scene((x, y, n) => small(x, y, 230) + (n() - 0.5) * 10, 145);
+  check("a small receipt on a pale desk fires", onPale.ready, `ink ${onPale.ink.toFixed(3)}`);
+}
+
+// Faded AND sparse together. Standard deviation confounds contrast with
+// density, so each fault alone passed the old global gate and the two together
+// scored 8.4 and did not. Interactions are invisible when faults are only ever
+// tested one at a time.
+{
+  const both = scene((x, y, n) => (x % 7 < 2 && y % 8 < 2 ? 200 : 230) + (n() - 0.5) * 10, 146);
+  check("a receipt both faded and sparsely printed fires", both.ready,
+    `contrast ${both.detail.toFixed(1)} ink ${both.ink.toFixed(3)}/${both.inkContrast.toFixed(0)}`);
+}
+
+// Print covers a minority of a receipt and about half of a two-tone object.
+// That is what the upper bound is, and these are the numbers behind it.
+{
+  const receipt = scene((x, y, n) => (x > 12 && x < 52 && y > 6 && y < 42 ? (x % 7 < 2 && y % 5 !== 4 ? 60 : 230) : 40) + (n() - 0.5) * 12, 133);
+  check("ink covers a minority of a receipt", receipt.ink < 0.33, receipt.ink.toFixed(3));
+  for (const [name, r] of room) {
+    check(`  and ${name} is refused on one of the two`, r.ink > 0.33 || r.inkContrast < 20,
+      `ink ${r.ink.toFixed(3)} inkContrast ${r.inkContrast.toFixed(0)}`);
+  }
 }
 
 // The reason the paper verdict is a vote and not a per-frame test. A finger at
