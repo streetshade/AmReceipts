@@ -558,6 +558,73 @@ for (const [name, r] of room) {
     `fill ${blankWhite.paperFill.toFixed(2)} wander ${blankWhite.paperSpread.toFixed(3)}`);
 }
 
+// ------------------------------------------- print at the size print really is
+
+// Every fixture above draws "text" two pixels wide every seven, which is
+// enormous next to real print - and that is exactly why the suite passed while
+// a real receipt reported `ink 0.00/00` from the field. At 64x48 real text is
+// smeared into grey: measured on a rendered receipt, the ink contrast is 14 at
+// that size and 48 at 192x144. These run at the size the app now judges
+// subjects at, with strokes one pixel wide.
+{
+  const SW = 192, SH = 144;
+  const fine = (opts: { ink: number; paper: number; ground: number; every: number; seed: number }) => {
+    const random = rng(opts.seed);
+    const make = () => {
+      const data = new Uint8ClampedArray(SW * SH * 4);
+      for (let y = 0; y < SH; y++) {
+        for (let x = 0; x < SW; x++) {
+          const onSheet = x > 30 && x < 162 && y > 12 && y < 132;
+          // One-pixel strokes on text lines, the way print actually falls.
+          const isInk = onSheet && y % opts.every < 1 && x % 3 < 1;
+          const v = (onSheet ? (isInk ? opts.ink : opts.paper) : opts.ground) + (random() - 0.5) * 8;
+          const i = (y * SW + x) * 4;
+          data[i] = data[i + 1] = data[i + 2] = Math.max(0, Math.min(255, v));
+          data[i + 3] = 255;
+        }
+      }
+      return data;
+    };
+    // A still movement frame alongside, as the camera screen provides.
+    const still = new Uint8ClampedArray(W * H * 4).fill(200);
+    for (let p = 3; p < still.length; p += 4) still[p] = 255;
+    const d = new StabilityDetector();
+    let last = d.push(still, W, H, { rgba: make(), width: SW, height: SH });
+    for (let i = 0; i < 40; i++) last = d.push(still, W, H, { rgba: make(), width: SW, height: SH });
+    return last;
+  };
+
+  const crisp = fine({ ink: 45, paper: 235, ground: 55, every: 4, seed: 200 });
+  check("fine one-pixel print fires", crisp.ready, `ink ${crisp.ink.toFixed(3)}/${crisp.inkContrast.toFixed(0)}`);
+
+  const faint = fine({ ink: 175, paper: 235, ground: 55, every: 4, seed: 201 });
+  check("  faint fine print fires", faint.ready, `ink ${faint.ink.toFixed(3)}/${faint.inkContrast.toFixed(0)}`);
+
+  const sparse = fine({ ink: 45, paper: 235, ground: 55, every: 9, seed: 202 });
+  check("  widely spaced fine print fires", sparse.ready, `ink ${sparse.ink.toFixed(3)}/${sparse.inkContrast.toFixed(0)}`);
+
+  const onPale = fine({ ink: 45, paper: 235, ground: 225, every: 4, seed: 203 });
+  check("  fine print on a pale desk fires", onPale.ready, `ink ${onPale.ink.toFixed(3)}/${onPale.inkContrast.toFixed(0)}`);
+
+  const blank = fine({ ink: 235, paper: 235, ground: 55, every: 4, seed: 204 });
+  check("  and a blank sheet at the same size does not", !blank.ready,
+    `ink ${blank.ink.toFixed(3)}/${blank.inkContrast.toFixed(0)}`);
+}
+
+// A subject frame whose dimensions and pixels disagree must not be used.
+// Falling back to the movement frame's pixels while keeping the subject frame's
+// dimensions read past the end of the array and produced NaN, which fails every
+// comparison silently.
+{
+  const d = new StabilityDetector();
+  const still = new Uint8ClampedArray(W * H * 4).fill(200);
+  for (let p = 3; p < still.length; p += 4) still[p] = 255;
+  let last = d.push(still, W, H, { rgba: new Uint8ClampedArray(16), width: 192, height: 144 });
+  for (let i = 0; i < 30; i++) last = d.push(still, W, H, { rgba: new Uint8ClampedArray(16), width: 192, height: 144 });
+  check("a subject frame too short for its dimensions is refused, not used", Number.isFinite(last.detail));
+  check("  and produces no NaN anywhere", Number.isFinite(last.ink) && Number.isFinite(last.print));
+}
+
 // ------------------------------------------------------------------ warm-up
 
 const d = new StabilityDetector();

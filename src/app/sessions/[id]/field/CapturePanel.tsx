@@ -449,6 +449,18 @@ export default function CapturePanel({
     canvas.height = 48;
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
 
+    // A second, larger frame, for deciding whether this is a receipt at all.
+    //
+    // 64x48 is ample for "did the picture change" and hopeless for "is there
+    // print on it": measured against a rendered receipt at photographic scale,
+    // the ink contrast is 14 at 64x48 and 48 at 192x144, because at the smaller
+    // size the text has been smeared into grey. A real receipt on a real phone
+    // read as blank, which is what came back from the field.
+    const subjectCanvas = document.createElement("canvas");
+    subjectCanvas.width = 192;
+    subjectCanvas.height = 144;
+    const subjectCtx = subjectCanvas.getContext("2d", { willReadFrequently: true });
+
     const sample = () => {
       const video = videoRef.current;
       if (!ctx || !video || video.videoWidth === 0 || busy.current) return;
@@ -459,7 +471,16 @@ export default function CapturePanel({
       // survive the scaling.
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
       const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const reading = detector.current.push(frame.data, canvas.width, canvas.height);
+      let subject: { rgba: Uint8ClampedArray; width: number; height: number } | undefined;
+      if (subjectCtx) {
+        subjectCtx.drawImage(video, 0, 0, subjectCanvas.width, subjectCanvas.height);
+        subject = {
+          rgba: subjectCtx.getImageData(0, 0, subjectCanvas.width, subjectCanvas.height).data,
+          width: subjectCanvas.width,
+          height: subjectCanvas.height,
+        };
+      }
+      const reading = detector.current.push(frame.data, canvas.width, canvas.height, subject);
       if (tuning) setReading(reading);
 
       if (reading.ready) {

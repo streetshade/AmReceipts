@@ -61,7 +61,8 @@ const BASELINE_WINDOW = 90;
  * autofocus - runs from about 1.45 to 1.67, and drift runs from about 1.62
  * upwards. There is no line that separates them cleanly, so it is drawn where
  * every still case measured passes, and slow drift below roughly a quarter of a
- * pixel per frame passes with it.
+ * pixel per frame passes with it. "Every still case measured" is the synthetic
+ * set in `scripts/stability-check.ts`, not a survey of phones.
  *
  * That is the right way round. A quarter of a pixel per frame is the receipt
  * crossing the frame in about twenty seconds; the photograph is sharp, and if
@@ -116,8 +117,8 @@ const MAX_THRESHOLD = 24;
  * to it - noise of a few levels barely moves a figure that ink and paper drive
  * to eighty or more.
  *
- * Measured, and the two populations overlap here as well. Crisp black on white
- * gives about 79. A thermal receipt faded until ink and paper are 25 levels
+ * Measured on rendered scenes, and the two populations overlap here as well.
+ * Crisp black on white gives about 79. A thermal receipt faded until ink and paper are 25 levels
  * apart gives 10.7. A bare surface gives 3.5 at ordinary sensor noise, 8.5 in a
  * dim room, and 11.6 in near-darkness.
  *
@@ -185,9 +186,13 @@ const MIN_ROW_COVERAGE = 0.6;
  *   and by 30 even on a receipt faded to the edge of legibility.
  *
  *   AMOUNT stops a two-tone object. Print covers a MINORITY of a receipt - 1%
- *   to 25% across every fixture here. A monitor, a laptop, a keyboard and a mug
- *   all split about half and half, and so does a couch, which is the one thing
- *   in the reported list that contrast alone could not refuse.
+ *   to 25% across everything measured here. In the rendered room scenes a
+ *   monitor, a keyboard, a mug and a couch all split much more evenly.
+ *
+ * What neither refuses is a bright screen inside a darker bezel: a laptop
+ * measures 0.071/35 against a receipt's 0.072/48, because by these two numbers
+ * that is what a receipt looks like. Distribution was tried and does not
+ * separate them either.
  *
  * The lower bound is deliberately tiny. It is not what rejects a blank surface
  * - contrast does that, and does it better - it is only there so a band with
@@ -451,7 +456,13 @@ function paperShapeOf(
   }
 
   // Too little of the frame is a continuous band to call it a sheet.
-  if (bestLength < height * 0.25) return BLANK_SHAPE;
+  //
+  // Roughly a sixth, down from a quarter. A till receipt held a little further
+  // away, or lying across the corner of the frame, occupies less than a quarter
+  // and was refused for it. Note this is the longest UNBROKEN run of qualifying
+  // rows, not the sheet's total height, so a sheet whose rows fragment can
+  // still fall short of it.
+  if (bestLength < height * 0.16) return BLANK_SHAPE;
 
   const bandLefts: number[] = [];
   const bandWidths: number[] = [];
@@ -486,39 +497,73 @@ function paperShapeOf(
   //
   // The window is wide compared to a stroke of text and narrow compared to a
   // shadow, which is what lets it tell them apart.
+  // A separable box blur over the band, done with running sums: two passes of
+  // O(n) rather than one of O(n x 81). At the resolution the subject frame now
+  // needs, the naive version would be two million operations per camera frame.
   const RADIUS = 4;
-  const flat: number[] = [];
-  for (let y = bestStart; y < bestStart + bestLength; y++) {
+  const bandW = width;
+  const bandH = bestLength;
+  const src = new Float64Array(bandW * bandH);
+  const inBand = new Uint8Array(bandW * bandH);
+  for (let i = 0; i < bandH; i++) {
+    const y = bestStart + i;
     const from = lefts[y];
+    if (from < 0) continue;
     const to = from + widths[y] - 1;
     const row = y * width;
     for (let x = from; x <= to; x++) {
-      let acc = 0;
-      let n = 0;
-      for (let dy = -RADIUS; dy <= RADIUS; dy++) {
-        const yy = y + dy;
-        if (yy < bestStart || yy >= bestStart + bestLength) continue;
-        // Bounded by the NEIGHBOURING row's own span, not this row's.
-        //
-        // On a slanted sheet those are different, and using this row's reached
-        // outside the paper into whatever was behind it. Dark background pulled
-        // the local average down and left bright residuals on blank paper,
-        // which the minority test then read as print - a completely blank sheet
-        // held at 11 degrees fired.
-        const nFrom = lefts[yy];
-        if (nFrom < 0) continue;
-        const nTo = nFrom + widths[yy] - 1;
-        const nRow = yy * width;
-        for (let dx = -RADIUS; dx <= RADIUS; dx++) {
-          const xx = x + dx;
-          if (xx < nFrom || xx > nTo) continue;
-          acc += luma[nRow + xx];
-          n++;
-        }
+      src[i * bandW + x] = luma[row + x];
+      inBand[i * bandW + x] = 1;
+    }
+  }
+
+  // Horizontal, then vertical, each carrying a running sum and a running count
+  // so pixels outside the band contribute nothing rather than contributing
+  // background - which on a slanted sheet is what left fictitious print on
+  // blank paper.
+  const hSum = new Float64Array(bandW * bandH);
+  const hCount = new Float64Array(bandW * bandH);
+  for (let i = 0; i < bandH; i++) {
+    let sum = 0;
+    let n = 0;
+    const base = i * bandW;
+    for (let x = 0; x < bandW + RADIUS; x++) {
+      if (x < bandW && inBand[base + x]) {
+        sum += src[base + x];
+        n++;
       }
-      if (n === 0) continue;
-      // Centred on 128 so the histogram below can be built as usual.
-      flat.push(Math.max(0, Math.min(255, 128 + luma[row + x] - acc / n)));
+      const drop = x - 2 * RADIUS - 1;
+      if (drop >= 0 && inBand[base + drop]) {
+        sum -= src[base + drop];
+        n--;
+      }
+      const at = x - RADIUS;
+      if (at >= 0 && at < bandW) {
+        hSum[base + at] = sum;
+        hCount[base + at] = n;
+      }
+    }
+  }
+
+  const flat: number[] = [];
+  for (let x = 0; x < bandW; x++) {
+    let sum = 0;
+    let n = 0;
+    for (let i = 0; i < bandH + RADIUS; i++) {
+      if (i < bandH) {
+        sum += hSum[i * bandW + x];
+        n += hCount[i * bandW + x];
+      }
+      const drop = i - 2 * RADIUS - 1;
+      if (drop >= 0) {
+        sum -= hSum[drop * bandW + x];
+        n -= hCount[drop * bandW + x];
+      }
+      const at = i - RADIUS;
+      if (at >= 0 && at < bandH && inBand[at * bandW + x] && n > 0) {
+        // Centred on 128 so the histogram below can be built as usual.
+        flat.push(Math.max(0, Math.min(255, 128 + src[at * bandW + x] - sum / n)));
+      }
     }
   }
 
@@ -580,6 +625,16 @@ function printEnergyOf(luma: Uint8Array, width: number, height: number): number 
   return n > 0 ? sum / n : 0;
 }
 
+/** RGBA to brightness. The exact weights do not matter for either question. */
+function toLuma(rgba: Uint8ClampedArray, count: number): Uint8Array {
+  const luma = new Uint8Array(count);
+  for (let p = 0; p < count; p++) {
+    const i = p * 4;
+    luma[p] = (rgba[i] + 2 * rgba[i + 1] + rgba[i + 2]) >> 2;
+  }
+  return luma;
+}
+
 function median(values: number[]): number {
   if (values.length === 0) return 0;
   const sorted = [...values].sort((a, b) => a - b);
@@ -617,7 +672,24 @@ export class StabilityDetector {
    * Brightness rather than a single channel: red alone made a white receipt
    * under a warm light look noisier than it was.
    */
-  push(rgba: Uint8ClampedArray, width: number, height: number): StabilityReading {
+  /**
+   * @param subject A SECOND, larger frame for the subject test.
+   *
+   * Movement is measured at 64x48 because that is plenty to see a picture
+   * change and it has to run on every camera frame. Deciding whether the thing
+   * in view is a printed receipt does not survive that downscale: a real
+   * receipt filling the frame measures an ink contrast of 14 at 64x48, 27 at
+   * 128x96 and 48 at 192x144. At the smallest size the print is smeared into
+   * grey and a genuine receipt reads as blank, which is what was reported from
+   * the field. Omit it and the movement frame is used, which is what the
+   * fixtures do - their "text" is coarse enough to survive.
+   */
+  push(
+    rgba: Uint8ClampedArray,
+    width: number,
+    height: number,
+    subject?: { rgba: Uint8ClampedArray; width: number; height: number },
+  ): StabilityReading {
     const count = width * height;
     if (count === 0 || rgba.length < count * 4) return BLIND;
 
@@ -636,32 +708,44 @@ export class StabilityDetector {
       this.previousHeight = height;
     }
 
-    const luma = new Uint8Array(count);
-    for (let p = 0; p < count; p++) {
-      const i = p * 4;
-      // A cheap approximation of Rec. 601 luma; the exact weights do not matter
-      // when the answer is "did this change".
-      luma[p] = (rgba[i] + 2 * rgba[i + 1] + rgba[i + 2]) >> 2;
-    }
+    const luma = toLuma(rgba, count);
 
-    // Standard deviation of brightness. Ink against paper drives this a long
+    // The frame the subject is judged on, which may be a larger one.
+    //
+    // Pixels and dimensions are chosen TOGETHER. Falling back to the movement
+    // frame's pixels while keeping the subject frame's dimensions read past the
+    // end of the array and produced NaN measurements, which fail every
+    // comparison silently - a receipt going from firing to not, with nothing on
+    // screen to say why.
+    const usable =
+      subject !== undefined &&
+      Number.isInteger(subject.width) &&
+      Number.isInteger(subject.height) &&
+      subject.width > 0 &&
+      subject.height > 0 &&
+      subject.rgba.length >= subject.width * subject.height * 4;
+    const subjectWidth = usable ? subject!.width : width;
+    const subjectHeight = usable ? subject!.height : height;
+    const subjectLuma = usable ? toLuma(subject!.rgba, subjectWidth * subjectHeight) : luma;
+
+    // Standard deviation of brightness, over the subject frame. Ink against paper drives this a long
     // way up - about 79 for crisp print - while a uniform surface stays much
     // lower: 3.5 at ordinary sensor noise, though heavy noise in near-darkness
     // can lift it to 11 or so and past the gate. A neighbouring-pixel gradient
     // could not tell the two apart at all, because noise IS high-frequency
     // detail.
     let total = 0;
-    for (let p = 0; p < count; p++) total += luma[p];
-    const mean = total / count;
+    for (let p = 0; p < subjectLuma.length; p++) total += subjectLuma[p];
+    const mean = total / subjectLuma.length;
     let variance = 0;
-    for (let p = 0; p < count; p++) {
-      const d = luma[p] - mean;
+    for (let p = 0; p < subjectLuma.length; p++) {
+      const d = subjectLuma[p] - mean;
       variance += d * d;
     }
-    const detail = Math.sqrt(variance / count);
+    const detail = Math.sqrt(variance / subjectLuma.length);
 
-    const paper = paperShapeOf(luma, width, height);
-    const print = printEnergyOf(luma, width, height);
+    const paper = paperShapeOf(subjectLuma, subjectWidth, subjectHeight);
+    const print = printEnergyOf(subjectLuma, subjectWidth, subjectHeight);
     // This frame's opinion of the subject: enough contrast AND paper-shaped.
     // The verdict below is taken over a window of them.
     const subjectNow =
