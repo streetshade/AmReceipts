@@ -132,6 +132,21 @@ export default function CapturePanel({
    */
   const [reading, setReading] = useState<StabilityReading | null>(null);
   /**
+   * The latest detector reading at the moment the countdown expired.
+   *
+   * The live line below moves every camera frame, so by the time a photograph
+   * of the wrong thing has been taken the figures behind it are gone. This is
+   * what makes a false capture reportable.
+   *
+   * It is the last sample analysed, not necessarily the frame photographed, and
+   * not the whole basis of the decision - readiness is a vote over a window of
+   * these. It is also written just before the shutter's own guards run, so it
+   * can update on the rare occasion no photograph results.
+   */
+  const [firedAt, setFiredAt] = useState<StabilityReading | null>(null);
+  /** Always current, tuning or not, so the above can be filled in on firing. */
+  const latest = useRef<StabilityReading | null>(null);
+  /**
    * Captures thrown away while their upload was still in flight.
    *
    * The fetch cannot be called back, so it will create a receipt a moment after
@@ -481,6 +496,7 @@ export default function CapturePanel({
         };
       }
       const reading = detector.current.push(frame.data, canvas.width, canvas.height, subject);
+      latest.current = reading;
       if (tuning) setReading(reading);
 
       if (reading.ready) {
@@ -554,6 +570,7 @@ export default function CapturePanel({
 
       const left = deadline.current - Date.now();
       if (left <= 0) {
+        if (tuning) setFiredAt(latest.current);
         void shoot();
         return;
       }
@@ -564,7 +581,7 @@ export default function CapturePanel({
       setHold(Math.min(2, Math.max(1, Math.ceil(left / TICK_MS))));
     }, 120);
     return () => clearInterval(timer);
-  }, [auto, streaming, shoot]);
+  }, [auto, streaming, shoot, tuning]);
 
   // Retry anything left over from a previous visit, and again whenever the
   // connection comes back. flush() serialises itself, so mount and an
@@ -701,6 +718,13 @@ export default function CapturePanel({
 
         <div className="relative z-10 px-3 pb-1 pt-4 text-center font-mono text-f-14 text-field-mutedDark">
           {cameraError ? "camera unavailable" : streaming ? "live camera feed" : "starting camera…"}
+          {tuning && firedAt && (
+            <span className="mt-1 block text-f-12 leading-snug text-field-accent">
+              FIRED ON: contrast {firedAt.detail.toFixed(0)} · paper{" "}
+              {firedAt.paperFill.toFixed(2)}/{firedAt.paperSpread.toFixed(2)} · ink{" "}
+              {firedAt.ink.toFixed(3)}/{firedAt.inkContrast.toFixed(0)}
+            </span>
+          )}
           {tuning && reading && (
             <span className="mt-1 block text-f-12 leading-snug">
               move {reading.median.toFixed(1)} / limit {reading.threshold.toFixed(1)} (base{" "}
